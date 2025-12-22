@@ -1,259 +1,309 @@
-# app.py - Advanced RAG AI Agent for Movie Suggestions
-
-import streamlit as st
 import os
+import re
+import uuid
+import streamlit as st
+
+from sentence_transformers import SentenceTransformer, CrossEncoder
 import chromadb
-from chromadb import Client
-from sentence_transformers import SentenceTransformer
-from transformers import BertTokenizer, BertForSequenceClassification, pipeline
+
+# Optional (only if you enable Elastic Cloud)
+try:
+    from elasticsearch import Elasticsearch
+except Exception:
+    Elasticsearch = None
+
+# LLM (Groq via LangChain)
 from langchain_groq import ChatGroq
-from elasticsearch import Elasticsearch
-from huggingface_hub import login
-import torch.nn.functional as F
 
-# ============================
-# Page Configuration
-# ============================
-st.set_page_config(
-    page_title="Advanced RAG Movie Recommender",
-    page_icon="🎬",
-    layout="centered"
-)
 
-st.title("🎬 Advanced RAG Movie Recommender")
-st.markdown("Ask for movie suggestions — powered by fusion retrieval, reranking, and Groq's fast LLMs!")
+# -----------------------------
+# App Config
+# -----------------------------
+st.set_page_config(page_title="Advanced RAG Agent", layout="wide")
 
-# ============================
-# Secure API Key Loading
-# ============================
-def load_api_keys():
-    """Load Hugging Face and Groq API keys from multiple possible sources."""
-    
-    hf_token = None
-    groq_key = None
+st.title("Advanced RAG Agent (Query Routing + Fusion Retrieval + Rerank + LLM)")
 
-    # 1. Try Streamlit secrets (recommended for streamlit.app)
-    try:
-        hf_token = st.secrets["HUGGING_FACE_API_KEY"]
-        groq_key = st.secrets["GROQ_API_KEY"]
-        st.success("✅ API keys loaded from Streamlit secrets.")
-        return hf_token, groq_key
-    except:
-        pass
-
-    # 2. Try Google Colab secrets
-    try:
-        from google.colab import userdata
-        hf_token = userdata.get('HUGGING_FACE_API_KEY')
-        groq_key = userdata.get('GROQ_API_KEY')
-        st.success("✅ API keys loaded from Colab secrets.")
-        return hf_token, groq_key
-    except:
-        pass
-
-    # 3. Try local keys.txt file (for local testing)
-    if os.path.exists("keys.txt"):
-        with open("keys.txt", "r") as f:
-            lines = f.read().strip().splitlines()
-            for line in lines:
-                if line.startswith("HUGGING_FACE_API_KEY"):
-                    hf_token = line.split("=")[1].strip().strip('"').strip("'")
-                elif line.startswith("GROQ_API_KEY"):
-                    groq_key = line.split("=")[1].strip().strip('"').strip("'")
-        if hf_token and groq_key:
-            st.success("✅ API keys loaded from keys.txt file.")
-            return hf_token, groq_key
-
-    return None, None
-
-hf_api_token, groq_api_key = load_api_keys()
-
-if not hf_api_token or not groq_api_key:
-    st.error("❌ Missing API keys!")
-    st.info(
-        "Please provide your keys using one of these methods:\n"
-        "- Add them in **Streamlit Secrets** (recommended for deployment)\n"
-        "- Add them in **Colab Secrets** (if running in Colab)\n"
-        "- Create a `keys.txt` file in the same folder with:\n"
-        "```\n"
-        "HUGGING_FACE_API_KEY=hf_...\n"
-        "GROQ_API_KEY=gsk_...\n"
-        "```"
-    )
-    st.stop()
-
-# Login to Hugging Face
-login(token=hf_api_token)
-os.environ["GROQ_API_KEY"] = groq_api_key
-
-# ============================
-# Load Models (Cached)
-# ============================
-@st.cache_resource
-def load_models():
-    with st.spinner("Loading AI models... This may take 1-2 minutes on first run."):
-        sentence_model = SentenceTransformer('all-MiniLM-L6-v2')
-        rerank_tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-        rerank_model = BertForSequenceClassification.from_pretrained('bert-base-uncased')
-        summarizer = pipeline("summarization", model="sshleifer/distilbart-cnn-12-6")
-    return sentence_model, rerank_tokenizer, rerank_model, summarizer
-
-sentence_model, rerank_tokenizer, rerank_model, summarizer = load_models()
-
-# LLM Setup
-@st.cache_resource
-def get_llm():
-    return ChatGroq(
-        model="mixtral-8x7b-32768",
-        temperature=0.7,
-        max_tokens=1024,
+with st.expander("How this works", expanded=False):
+    st.write(
+        "This agent transforms your query, routes retrieval (vector / lexical / fusion), "
+        "reranks results for relevance, compresses the context, then generates an answer with an LLM."
     )
 
-llm = get_llm()
 
-# ============================
-# Setup Vector DB (Chroma) & Elasticsearch
-# ============================
+# -----------------------------
+# Secrets / Keys
+# -----------------------------
+def get_secret(name: str, default: str = "") -> str:
+    # Streamlit secrets first, then env var
+    return st.secrets.get(name, os.environ.get(name, default))
+
+GROQ_API_KEY = get_secret("GROQ_API_KEY")
+if not GROQ_API_KEY:
+    st.warning("Missing GROQ_API_KEY. Add it in Streamlit → Settings → Secrets, or as an environment variable.")
+
+# Optional Elastic Cloud secrets
+ELASTIC_URL = get_secret("ELASTIC_URL")
+ELASTIC_API_KEY = get_secret("ELASTIC_API_KEY")  # preferred over basic auth
+ELASTIC_INDEX = get_secret("ELASTIC_INDEX", "documents")
+
+
+# -----------------------------
+# Models (cached)
+# -----------------------------
 @st.cache_resource
-def setup_databases():
-    # ChromaDB
-    client = chromadb.Client()
-    collection_name = "movies"
-    try:
-        collection = client.create_collection(name=collection_name)
-    except:
-        collection = client.get_collection(name=collection_name)
+def load_embedder():
+    return SentenceTransformer("sentence-transformers/all-mpnet-base-v2")
 
-    # Sample movie documents
-    sample_docs = [
-        "The Shawshank Redemption is a deeply moving prison drama about hope and friendship. Perfect for a thoughtful rainy day.",
-        "Forrest Gump takes you on an emotional journey through decades of American history with incredible heart.",
-        "Inception is a mind-bending sci-fi thriller by Christopher Nolan — great if you love complex plots.",
-        "The Godfather is a masterpiece of crime drama, family, and power. A must-watch classic.",
-        "Spirited Away is a beautiful animated fantasy adventure from Studio Ghibli — magical and uplifting."
-    ]
+@st.cache_resource
+def load_reranker():
+    # Strong lightweight reranker
+    return CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
-    if collection.count() == 0:
-        collection.add(
-            documents=sample_docs,
-            ids=[f"doc_{i}" for i in range(len(sample_docs))]
-        )
+@st.cache_resource
+def load_llm():
+    if not GROQ_API_KEY:
+        return None
+    os.environ["GROQ_API_KEY"] = GROQ_API_KEY
+    return ChatGroq(model="mixtral-8x7b-32768", temperature=0, max_tokens=1024)
 
-    # Elasticsearch (using public demo or skip if not available)
-    # Note: Your original ES instance may not be accessible publicly → we skip critical dependency
-    es = None
-    try:
-        es = Elasticsearch(
-            hosts=['https://2e8be0fdffac440795fcfbecf86079b4.us-central1.gcp.cloud.es.io'],
-            http_auth=('elastic', 'aPRfFBGj1FkOMgvm7XqkgAFJ')
-        )
-        if es.ping():
-            st.success("Connected to Elasticsearch")
-        else:
-            es = None
-    except:
-        es = None
+embedder = load_embedder()
+reranker = load_reranker()
+llm = load_llm()
 
-    return collection, es
 
-collection, es_client = setup_databases()
+# -----------------------------
+# Vector Store (Chroma)
+# -----------------------------
+@st.cache_resource
+def get_chroma_collection():
+    # Persistent storage path (works on Streamlit Cloud; resets if app redeploys)
+    client = chromadb.PersistentClient(path="./chroma_db")
+    collection = client.get_or_create_collection(name="rag_docs")
+    return collection
 
-# ============================
-# RAG Pipeline Functions
-# ============================
-def fusion_retrieval(query, top_k=5):
-    # Vector search (Chroma)
-    query_emb = sentence_model.encode([query])
-    results = collection.query(
-        query_embeddings=query_emb.tolist(),
-        n_results=top_k
-    )
-    vector_docs = results['documents'][0]
+collection = get_chroma_collection()
 
-    # Keyword search (Elasticsearch fallback)
-    es_docs = []
-    if es_client:
-        try:
-            res = es_client.search(
-                index="movies",
-                body={"query": {"match": {"content": query}}, "size": top_k}
-            )
-            es_docs = [hit["_source"]["content"] for hit in res['hits']['hits']]
-        except:
-            pass
 
-    # Combine and deduplicate
-    all_docs = list(dict.fromkeys(vector_docs + es_docs))
-    return all_docs[:top_k]
-
-def rerank_documents(query, documents):
-    if not documents:
+# -----------------------------
+# Text utilities
+# -----------------------------
+def simple_chunk(text: str, chunk_size: int = 900, overlap: int = 120):
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
         return []
-    inputs = [rerank_tokenizer(query, doc, truncation=True, padding=True, max_length=512, return_tensors="pt") for doc in documents]
-    scores = []
-    for inp in inputs:
-        with torch.no_grad():
-            outputs = rerank_model(**inp)
-            probs = F.softmax(outputs.logits, dim=1)
-            scores.append(probs[0][1].item())  # Relevance score
-    ranked = sorted(zip(documents, scores), key=lambda x: x[1], reverse=True)
-    return [doc for doc, _ in ranked]
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = min(len(text), start + chunk_size)
+        chunks.append(text[start:end])
+        start = max(end - overlap, start + 1)
+    return chunks
 
-def compress_context(documents):
-    summaries = []
-    for doc in documents:
-        if len(doc.split()) > 30:
-            try:
-                summary = summarizer(doc, max_length=80, min_length=20, do_sample=False)[0]['summary_text']
-                summaries.append(summary)
-            except:
-                summaries.append(doc[:200] + "...")
-        else:
-            summaries.append(doc)
-    return summaries
+def advanced_query_transformation(query: str) -> str:
+    # Keep your notebook’s idea, but make it practical:
+    # - normalize whitespace
+    # - expand a couple common synonyms (customize as you like)
+    q = re.sub(r"\s+", " ", query).strip()
+    expansions = {
+        "movie": ["film", "cinema"],
+        "heart attack": ["myocardial infarction", "MI"],
+        "CVD": ["cardiovascular disease", "cardiac risk"]
+    }
+    extra_terms = []
+    q_lower = q.lower()
+    for k, syns in expansions.items():
+        if k.lower() in q_lower:
+            extra_terms.extend(syns)
+    if extra_terms:
+        q = q + " (" + " OR ".join(extra_terms) + ")"
+    return q
 
-def generate_answer(query, context_chunks):
-    context = "\n\n".join(context_chunks)
-    prompt = f"""[INST]
-You are a friendly and expert movie recommender. Use the provided context to give helpful, engaging, and accurate movie suggestions.
+def advanced_query_routing(query: str) -> str:
+    # Simple routing heuristic:
+    # - lexical if user asks for exact quotes / exact titles / names
+    # - vector otherwise
+    q = query.lower()
+    lexical_triggers = ["exact", "quote", "verbatim", "title", "named", "who is", "when is", "where is"]
+    if any(t in q for t in lexical_triggers):
+        return "lexical"
+    return "vector"
 
-User Question: {query}
 
-Relevant Movie Info:
-{context}
+# -----------------------------
+# Optional Elasticsearch
+# -----------------------------
+def get_es_client():
+    if not Elasticsearch:
+        return None
+    if not ELASTIC_URL or not ELASTIC_API_KEY:
+        return None
+    try:
+        return Elasticsearch(ELASTIC_URL, api_key=ELASTIC_API_KEY)
+    except Exception:
+        return None
 
-Provide a natural, detailed response with movie recommendations and brief reasons why they fit.
-[/INST]"""
+es = get_es_client()
 
-    response = llm.invoke(prompt)
-    return response.content
 
-def advanced_rag_pipeline(query):
-    docs = fusion_retrieval(query)
-    ranked = rerank_documents(query, docs)
-    compressed = compress_context(ranked)
-    answer = generate_answer(query, compressed)
-    return answer
+def vector_retrieve(query: str, top_k: int):
+    q_emb = embedder.encode([query])[0].tolist()
+    res = collection.query(query_embeddings=[q_emb], n_results=top_k)
+    docs = res.get("documents", [[]])[0]
+    ids = res.get("ids", [[]])[0]
+    return [{"id": ids[i], "text": docs[i], "source": "vector"} for i in range(len(docs))]
 
-# ============================
-# Main UI
-# ============================
-query = st.text_input(
-    "🎥 What kind of movie are you in the mood for?",
-    placeholder="e.g., good movies for a rainy day, uplifting feel-good films, mind-bending sci-fi..."
+def lexical_retrieve(query: str, top_k: int):
+    if not es:
+        return []
+    body = {
+        "size": top_k,
+        "query": {"match": {"content": query}}
+    }
+    r = es.search(index=ELASTIC_INDEX, body=body)
+    hits = r.get("hits", {}).get("hits", [])
+    out = []
+    for h in hits:
+        out.append({"id": h.get("_id", str(uuid.uuid4())), "text": h["_source"]["content"], "source": "lexical"})
+    return out
+
+def fusion_retrieval(query: str, top_k: int):
+    # Combine and de-duplicate
+    vec = vector_retrieve(query, top_k=top_k)
+    lex = lexical_retrieve(query, top_k=top_k)
+    combined = vec + lex
+    seen = set()
+    unique = []
+    for item in combined:
+        key = item["text"][:200]
+        if key not in seen:
+            seen.add(key)
+            unique.append(item)
+    return unique[: (top_k * 2)]
+
+
+def rerank_documents(query: str, docs: list, top_k: int):
+    if not docs:
+        return []
+    pairs = [(query, d["text"]) for d in docs]
+    scores = reranker.predict(pairs)
+    ranked = sorted(zip(docs, scores), key=lambda x: x[1], reverse=True)
+    return [{"score": float(s), **d} for d, s in ranked[:top_k]]
+
+def select_and_compress_context(ranked_docs: list, max_chars: int = 3000):
+    # Simple “compression”: take top docs until we hit the budget.
+    context_parts = []
+    total = 0
+    for d in ranked_docs:
+        t = d["text"].strip()
+        if not t:
+            continue
+        if total + len(t) > max_chars:
+            t = t[: max(0, max_chars - total)]
+        context_parts.append(t)
+        total += len(t)
+        if total >= max_chars:
+            break
+    return "\n\n---\n\n".join(context_parts)
+
+def generate_answer(query: str, context: str):
+    if not llm:
+        return "LLM is not configured. Please add GROQ_API_KEY in Streamlit Secrets."
+    prompt = (
+        "You are a helpful assistant. Answer the user using ONLY the provided context.\n"
+        "If the context is insufficient, say what is missing and ask a clarifying question.\n\n"
+        f"USER QUERY:\n{query}\n\n"
+        f"CONTEXT:\n{context}\n"
+    )
+    return llm.invoke(prompt).content
+
+
+def advanced_rag_pipeline(query: str, mode: str, top_k: int):
+    transformed = advanced_query_transformation(query)
+
+    if mode == "auto":
+        route = advanced_query_routing(transformed)
+    else:
+        route = mode
+
+    if route == "vector":
+        retrieved = vector_retrieve(transformed, top_k=top_k)
+    elif route == "lexical":
+        retrieved = lexical_retrieve(transformed, top_k=top_k)
+    else:
+        retrieved = fusion_retrieval(transformed, top_k=top_k)
+
+    ranked = rerank_documents(query, retrieved, top_k=top_k)
+    context = select_and_compress_context(ranked)
+    answer = generate_answer(query, context)
+
+    return transformed, route, ranked, context, answer
+
+
+# -----------------------------
+# Sidebar: Ingest Docs
+# -----------------------------
+st.sidebar.header("1) Add / Index Documents")
+
+uploaded = st.sidebar.file_uploader(
+    "Upload .txt files (simple first version).",
+    type=["txt"],
+    accept_multiple_files=True
 )
 
-if st.button("Get Recommendations") and query.strip():
-    with st.spinner("Searching movies and generating recommendations..."):
-        try:
-            answer = advanced_rag_pipeline(query.strip())
-            st.markdown("### 🍿 Your Movie Recommendations")
-            st.write(answer)
-        except Exception as e:
-            st.error(f"Oops! Something went wrong: {str(e)}")
-elif st.button("Get Recommendations") and not query.strip():
-    st.warning("Please enter a movie mood or question!")
+chunk_size = st.sidebar.slider("Chunk size (chars)", 300, 1500, 900, 50)
+overlap = st.sidebar.slider("Overlap (chars)", 0, 400, 120, 20)
 
-# Footer
-st.markdown("---")
-st.caption("Built with Streamlit • Powered by Groq, Hugging Face, ChromaDB • Sample demo with small movie knowledge base")
+if st.sidebar.button("Index uploaded files"):
+    if not uploaded:
+        st.sidebar.error("Please upload at least one .txt file.")
+    else:
+        added = 0
+        for f in uploaded:
+            text = f.read().decode("utf-8", errors="ignore")
+            chunks = simple_chunk(text, chunk_size=chunk_size, overlap=overlap)
+            if not chunks:
+                continue
+
+            ids = [str(uuid.uuid4()) for _ in chunks]
+            embs = embedder.encode(chunks).tolist()
+            collection.add(ids=ids, documents=chunks, embeddings=embs)
+            added += len(chunks)
+
+        st.sidebar.success(f"Indexed {added} chunks into Chroma.")
+
+
+st.sidebar.header("2) Retrieval Settings")
+mode = st.sidebar.selectbox("Retrieval mode", ["auto", "vector", "lexical", "fusion"])
+top_k = st.sidebar.slider("Top-K", 2, 10, 5)
+
+if mode in ["lexical", "fusion"] and (not es):
+    st.sidebar.info("Lexical retrieval needs Elastic Cloud configured (ELASTIC_URL + ELASTIC_API_KEY).")
+
+
+# -----------------------------
+# Main Chat UI
+# -----------------------------
+query = st.text_input("Ask a question")
+
+colA, colB = st.columns([1, 1])
+
+if st.button("Run Agent") and query.strip():
+    with st.spinner("Retrieving + reranking + generating answer..."):
+        transformed, route, ranked, context, answer = advanced_rag_pipeline(query, mode=mode, top_k=top_k)
+
+    st.subheader("Answer")
+    st.write(answer)
+
+    with colA:
+        st.subheader("Pipeline Details")
+        st.write(f"**Transformed query:** {transformed}")
+        st.write(f"**Route:** {route}")
+
+    with colB:
+        st.subheader("Top Reranked Chunks")
+        for i, d in enumerate(ranked, start=1):
+            st.write(f"**#{i} | score={d['score']:.4f} | source={d['source']}**")
+            st.write(d["text"][:700] + ("..." if len(d["text"]) > 700 else ""))
+
+    with st.expander("Context used for generation"):
+        st.text(context)
