@@ -1,0 +1,8 @@
+streamlit
+sentence-transformers
+transformers
+torch
+chromadb
+langchain_groq
+elasticsearch
+huggingface_hub

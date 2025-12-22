@@ -1,0 +1,14 @@
+# Sensitive files - NEVER commit these!
+keys.txt
+.env
+.streamlit/secrets.toml
+
+# Python / Streamlit caches
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+# Mac-specific
+.DS_Store
