@@ -218,28 +218,18 @@ def select_and_compress_context(ranked_docs: list, max_chars: int = 3000):
 def generate_answer(query: str, context: str):
     if not llm:
         return "LLM is not configured. Please add GROQ_API_KEY in Streamlit Secrets."
+
     prompt = (
         "You are a helpful assistant. Answer the user using ONLY the provided context.\n"
         "If the context is insufficient, say what is missing and ask a clarifying question.\n\n"
         f"USER QUERY:\n{query}\n\n"
         f"CONTEXT:\n{context}\n"
     )
-    def generate_answer(query: str, context: str):
-        if not llm:
-            return "LLM is not configured. Please add GROQ_API_KEY in Streamlit Secrets."
 
-        prompt = (
-            "You are a helpful assistant. Answer the user using ONLY the provided context.\n"
-            "If the context is insufficient, say what is missing and ask a clarifying question.\n\n"
-            f"USER QUERY:\n{query}\n\n"
-            f"CONTEXT:\n{context}\n"
-        )
-
-        try:
-            return llm.invoke(prompt).content
-        except Exception as e:
-            return f"Groq call failed: {type(e).__name__}: {str(e)}"
-
+    try:
+        return llm.invoke(prompt).content
+    except Exception as e:
+        return f"Groq call failed: {type(e).__name__}: {str(e)}"
 
 
 def advanced_rag_pipeline(query: str, mode: str, top_k: int):
@@ -304,11 +294,19 @@ if st.sidebar.button("Index uploaded files"):
 
 
 st.sidebar.header("2) Retrieval Settings")
-mode = st.sidebar.selectbox("Retrieval mode", ["auto", "vector", "lexical", "fusion"])
+
+# Show lexical/fusion ONLY if Elastic is configured
+retrieval_options = ["auto", "vector"]
+if es:  # Elastic client exists only when ELASTIC_URL + ELASTIC_API_KEY are present
+    retrieval_options += ["lexical", "fusion"]
+
+mode = st.sidebar.selectbox("Retrieval mode", retrieval_options)
 top_k = st.sidebar.slider("Top-K", 2, 10, 5)
 
-if mode in ["lexical", "fusion"] and (not es):
-    st.sidebar.info("Lexical retrieval needs Elastic Cloud configured (ELASTIC_URL + ELASTIC_API_KEY).")
+# Optional: if Elastic is missing, keep a helpful hint (but user won't see lexical/fusion anyway)
+if (not es):
+    st.sidebar.caption("Tip: Elastic (lexical/fusion) is hidden because ELASTIC_URL / ELASTIC_API_KEY are not set.")
+
 
 
 # -----------------------------
