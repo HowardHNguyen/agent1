@@ -64,7 +64,7 @@ def load_llm():
     if not GROQ_API_KEY:
         return None
     os.environ["GROQ_API_KEY"] = GROQ_API_KEY
-    return ChatGroq(model="mixtral-8x7b-32768", temperature=0, max_tokens=1024)
+    return ChatGroq(model="llama-3.3-70b-versatile", temperature=0, max_tokens=1024)
 
 embedder = load_embedder()
 reranker = load_reranker()
@@ -214,7 +214,22 @@ def generate_answer(query: str, context: str):
         f"USER QUERY:\n{query}\n\n"
         f"CONTEXT:\n{context}\n"
     )
-    return llm.invoke(prompt).content
+    def generate_answer(query: str, context: str):
+        if not llm:
+            return "LLM is not configured. Please add GROQ_API_KEY in Streamlit Secrets."
+
+        prompt = (
+            "You are a helpful assistant. Answer the user using ONLY the provided context.\n"
+            "If the context is insufficient, say what is missing and ask a clarifying question.\n\n"
+            f"USER QUERY:\n{query}\n\n"
+            f"CONTEXT:\n{context}\n"
+        )
+
+        try:
+            return llm.invoke(prompt).content
+        except Exception as e:
+            return f"Groq call failed: {type(e).__name__}: {str(e)}"
+
 
 
 def advanced_rag_pipeline(query: str, mode: str, top_k: int):
