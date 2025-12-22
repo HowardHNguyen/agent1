@@ -155,16 +155,26 @@ def vector_retrieve(query: str, top_k: int):
 def lexical_retrieve(query: str, top_k: int):
     if not es:
         return []
-    body = {
-        "size": top_k,
-        "query": {"match": {"content": query}}
-    }
-    r = es.search(index=ELASTIC_INDEX, body=body)
+
+    body = {"size": top_k, "query": {"match": {"content": query}}}
+
+    try:
+        r = es.search(index=ELASTIC_INDEX, body=body)
+    except Exception as e:
+        # ✅ Key fix: index missing or ES misconfigured → return empty instead of crashing
+        st.warning(f"Lexical retrieval unavailable (Elastic issue): {type(e).__name__}")
+        return []
+
     hits = r.get("hits", {}).get("hits", [])
     out = []
     for h in hits:
-        out.append({"id": h.get("_id", str(uuid.uuid4())), "text": h["_source"]["content"], "source": "lexical"})
+        out.append({
+            "id": h.get("_id", str(uuid.uuid4())),
+            "text": h["_source"].get("content", ""),
+            "source": "lexical"
+        })
     return out
+
 
 def fusion_retrieval(query: str, top_k: int):
     # Combine and de-duplicate
@@ -246,6 +256,12 @@ def advanced_rag_pipeline(query: str, mode: str, top_k: int):
         retrieved = lexical_retrieve(transformed, top_k=top_k)
     else:
         retrieved = fusion_retrieval(transformed, top_k=top_k)
+
+    if not retrieved:
+        return transformed, route, [], "", (
+            "No documents were retrieved. "
+            "Please click **Index uploaded files** first, then ask your question again."
+        )
 
     ranked = rerank_documents(query, retrieved, top_k=top_k)
     context = select_and_compress_context(ranked)
