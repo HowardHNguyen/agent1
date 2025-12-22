@@ -1,8 +1,5 @@
-streamlit
-sentence-transformers
-transformers
-torch
-chromadb
-langchain_groq
-elasticsearch
-huggingface_hub
+streamlit==1.40.1
+sentence-transformers==3.0.1
+chromadb==0.5.5
+langchain-groq==0.2.0
+elasticsearch==8.15.0
