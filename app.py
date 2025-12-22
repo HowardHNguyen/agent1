@@ -410,7 +410,7 @@ query = st.text_input("Ask a question")
 
 colA, colB = st.columns([1, 1])
 
-if st.button("Run Agent") and query.strip():
+if st.button("RUN AGENT") and query.strip():
     with st.spinner("Retrieving + reranking + generating answer..."):
         transformed, route, ranked, context, answer = advanced_rag_pipeline(query, mode=mode, top_k=top_k)
 
