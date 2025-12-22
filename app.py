@@ -26,32 +26,67 @@ st.title("Advanced RAG Agent (Query Routing + Fusion Retrieval + Rerank + LLM)")
 # --- "How this works" expander with these two ---
 with st.expander("About This Agent", expanded=False):
     st.markdown(
-        """
-### Advanced RAG Agent (Executive + Technical Overview)
+    """
+---
 
-This app demonstrates a **production-style Retrieval-Augmented Generation (RAG) AI Agent**:
-it answers questions by retrieving relevant content from your uploaded documents, then generating
-a grounded response with an LLM.
+### Models & Technologies Used
 
-**Why it’s different from a generic chatbot**
-- The agent is **document-grounded**: it answers using the indexed content (reduces hallucinations).
-- It is **auditable**: you can see the top retrieved / reranked chunks used to form the answer.
-- It is **modular**: each stage (chunking, embeddings, retrieval, rerank, generation) can be upgraded independently.
+This AI agent is built using a **modern, modular AI stack** designed to mirror how
+production-grade AI systems are implemented in enterprise environments.
 
-**Pipeline (what happens when you click Run Agent)**
-1. **Ingest & chunk** uploaded documents into overlapping segments.
-2. **Embed & index** chunks into a vector store (ChromaDB).
-3. **Transform & route** the query to the best retrieval method (auto/vector; lexical/fusion optional).
-4. **Retrieve** top candidate chunks from the knowledge index.
-5. **Rerank** results with a cross-encoder to improve precision.
-6. **Compress context** to stay within token/context limits.
-7. **Generate** a final answer using the LLM **only from the retrieved context**.
+#### Language Model (LLM)
+- **Groq-hosted LLM (LLaMA family)**  
+  Used exclusively for **final answer synthesis**, not retrieval.
+- The LLM is intentionally constrained to generate responses **only from retrieved context**.
+- This reduces hallucination risk and supports governance and review workflows.
 
-**MarTech / Analytics relevance**
-This pattern is used for: internal knowledge copilots, marketing playbooks, policy Q&A, analytics enablement,
-campaign troubleshooting, and executive-ready decision support.
-        """.strip()
-    )
+#### Embedding Model
+- **Sentence-Transformers (Transformer-based embeddings)**  
+  Converts document chunks and user queries into dense vector representations.
+- Enables **semantic similarity search** rather than keyword matching.
+
+#### Vector Database
+- **ChromaDB**
+  - Lightweight, local-first vector store
+  - Fast semantic retrieval
+  - Easily swappable with enterprise vector databases (Pinecone, Weaviate, OpenSearch)
+
+#### Reranking Model
+- **Cross-Encoder Neural Reranker**
+  - Evaluates query–document pairs jointly
+  - Improves precision over pure vector similarity
+  - Ensures the most relevant content is prioritized before generation
+
+#### Query Routing & Retrieval Strategy
+- **Auto-routing logic**
+  - Routes queries to vector retrieval by default
+  - Architecture supports lexical and hybrid (fusion) retrieval when enabled
+- Demonstrates extensibility for multi-retriever strategies.
+
+#### Context Management
+- **Context compression**
+  - Selects only the most relevant passages
+  - Prevents token overflow and reduces noise
+  - Improves answer quality and cost efficiency
+
+---
+
+### Engineering Principles Demonstrated
+
+- **Separation of concerns**  
+  Retrieval, ranking, and generation are independent components.
+- **Explainability by design**  
+  Users can inspect retrieved chunks and relevance scores.
+- **Safety-first AI usage**  
+  No direct PII ingestion into LLM prompts.
+- **Enterprise extensibility**  
+  Each component can be upgraded or replaced without rewriting the system.
+
+This architecture reflects how AI copilots and decision-support tools are built
+inside modern MarTech, analytics, and data platforms.
+    """.strip()
+)
+
 
 with st.expander("How to Use (Quick Guide)", expanded=False):
     st.markdown(
