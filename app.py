@@ -24,6 +24,43 @@ st.set_page_config(page_title="Advanced RAG Agent", layout="wide")
 st.title("Advanced RAG Agent (Query Routing + Fusion Retrieval + Rerank + LLM)")
 
 # --- "How this works" expander with these two ---
+
+with st.expander("How to Use (Quick Guide)", expanded=False):
+    st.markdown(
+        """
+### Step-by-step
+
+**1) Upload**
+Upload one or more `.txt` documents (marketing playbooks, SOPs, briefs, KPI definitions, FAQs, etc.).
+
+**2) Index uploaded files (required)**
+Click **Index uploaded files** to:
+- chunk the text,
+- embed each chunk,
+- store them in the vector index (ChromaDB).
+
+> Uploading alone does not make documents searchable — indexing is what “loads” knowledge into the agent.
+
+**3) Ask a question**
+Ask something that can be answered from your documents, for example:
+- “How should we structure a basic A/B test for a landing page?”
+- “What is the difference between attribution and incrementality?”
+- “How should we handle PII in marketing analytics and AI prompts?”
+
+**4) Run Agent**
+Click **Run Agent**. The app will display:
+- the transformed query,
+- the retrieval route used,
+- the top reranked chunks (what the agent relied on),
+- the final grounded answer,
+- the context used for generation.
+
+**Tip**
+If the agent says **No documents were retrieved**, it usually means indexing hasn’t happened yet
+(or the index is empty).
+        """.strip()
+    )
+
 with st.expander("About This Agent", expanded=False):
     st.markdown(
     """
@@ -86,45 +123,6 @@ This architecture reflects how AI copilots and decision-support tools are built
 inside modern MarTech, analytics, and data platforms.
     """.strip()
 )
-
-
-with st.expander("How to Use (Quick Guide)", expanded=False):
-    st.markdown(
-        """
-### Step-by-step
-
-**1) Upload**
-Upload one or more `.txt` documents (marketing playbooks, SOPs, briefs, KPI definitions, FAQs, etc.).
-
-**2) Index uploaded files (required)**
-Click **Index uploaded files** to:
-- chunk the text,
-- embed each chunk,
-- store them in the vector index (ChromaDB).
-
-> Uploading alone does not make documents searchable — indexing is what “loads” knowledge into the agent.
-
-**3) Ask a question**
-Ask something that can be answered from your documents, for example:
-- “How should we structure a basic A/B test for a landing page?”
-- “What is the difference between attribution and incrementality?”
-- “How should we handle PII in marketing analytics and AI prompts?”
-
-**4) Run Agent**
-Click **Run Agent**. The app will display:
-- the transformed query,
-- the retrieval route used,
-- the top reranked chunks (what the agent relied on),
-- the final grounded answer,
-- the context used for generation.
-
-**Tip**
-If the agent says **No documents were retrieved**, it usually means indexing hasn’t happened yet
-(or the index is empty).
-        """.strip()
-    )
-
-
 
 # -----------------------------
 # Secrets / Keys
