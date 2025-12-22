@@ -23,11 +23,72 @@ st.set_page_config(page_title="Advanced RAG Agent", layout="wide")
 
 st.title("Advanced RAG Agent (Query Routing + Fusion Retrieval + Rerank + LLM)")
 
-with st.expander("How this works", expanded=False):
-    st.write(
-        "This agent transforms your query, routes retrieval (vector / lexical / fusion), "
-        "reranks results for relevance, compresses the context, then generates an answer with an LLM."
+# --- "How this works" expander with these two ---
+with st.expander("About This Agent", expanded=False):
+    st.markdown(
+        """
+### Advanced RAG Agent (Executive + Technical Overview)
+
+This app demonstrates a **production-style Retrieval-Augmented Generation (RAG) AI Agent**:
+it answers questions by retrieving relevant content from your uploaded documents, then generating
+a grounded response with an LLM.
+
+**Why it’s different from a generic chatbot**
+- The agent is **document-grounded**: it answers using the indexed content (reduces hallucinations).
+- It is **auditable**: you can see the top retrieved / reranked chunks used to form the answer.
+- It is **modular**: each stage (chunking, embeddings, retrieval, rerank, generation) can be upgraded independently.
+
+**Pipeline (what happens when you click Run Agent)**
+1. **Ingest & chunk** uploaded documents into overlapping segments.
+2. **Embed & index** chunks into a vector store (ChromaDB).
+3. **Transform & route** the query to the best retrieval method (auto/vector; lexical/fusion optional).
+4. **Retrieve** top candidate chunks from the knowledge index.
+5. **Rerank** results with a cross-encoder to improve precision.
+6. **Compress context** to stay within token/context limits.
+7. **Generate** a final answer using the LLM **only from the retrieved context**.
+
+**MarTech / Analytics relevance**
+This pattern is used for: internal knowledge copilots, marketing playbooks, policy Q&A, analytics enablement,
+campaign troubleshooting, and executive-ready decision support.
+        """.strip()
     )
+
+with st.expander("How to Use (Quick Guide)", expanded=False):
+    st.markdown(
+        """
+### Step-by-step
+
+**1) Upload**
+Upload one or more `.txt` documents (marketing playbooks, SOPs, briefs, KPI definitions, FAQs, etc.).
+
+**2) Index uploaded files (required)**
+Click **Index uploaded files** to:
+- chunk the text,
+- embed each chunk,
+- store them in the vector index (ChromaDB).
+
+> Uploading alone does not make documents searchable — indexing is what “loads” knowledge into the agent.
+
+**3) Ask a question**
+Ask something that can be answered from your documents, for example:
+- “How should we structure a basic A/B test for a landing page?”
+- “What is the difference between attribution and incrementality?”
+- “How should we handle PII in marketing analytics and AI prompts?”
+
+**4) Run Agent**
+Click **Run Agent**. The app will display:
+- the transformed query,
+- the retrieval route used,
+- the top reranked chunks (what the agent relied on),
+- the final grounded answer,
+- the context used for generation.
+
+**Tip**
+If the agent says **No documents were retrieved**, it usually means indexing hasn’t happened yet
+(or the index is empty).
+        """.strip()
+    )
+
 
 
 # -----------------------------
@@ -336,3 +397,25 @@ if st.button("Run Agent") and query.strip():
 
     with st.expander("Context used for generation"):
         st.text(context)
+
+# -----------------------------
+# Footer
+# -----------------------------
+st.markdown("---")
+
+st.markdown(
+    """
+<div style="text-align:center; font-size: 0.9rem; line-height: 1.6; color: #6b7280;">
+  <div><b>Advanced RAG Agent</b> — Executive Demo for AI/ML + MarTech Innovation</div>
+  <div>Built by Howard Nguyen • Streamlit • ChromaDB • SentenceTransformers • Cross-Encoder Rerank • Groq LLM</div>
+  <div style="margin-top:6px;">
+    <span>⚠️ Demo app: answers are generated from uploaded documents and may require human review.</span>
+  </div>
+  <div style="margin-top:6px;">
+    <span>Privacy note: avoid uploading sensitive PII unless you have approval and proper controls.</span>
+  </div>
+</div>
+    """,
+    unsafe_allow_html=True
+)
+
