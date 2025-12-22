@@ -1,0 +1,196 @@
+Marketing Knowledge Base for RAG Testing
+A practical reference corpus for marketing strategy, analytics, CRM, and privacy
+Generated: 2025-12-22
+
+1. Core Marketing Strategy
+Marketing strategy defines who you serve, what you promise, and how you win. A useful strategy statement includes:
+- Target customer and priority segment(s)
+- The customer problem or job-to-be-done
+- Value proposition (why you, why now)
+- Differentiators (proof, product, process, partnerships)
+- Channel approach and budget constraints
+- Measurement plan (KPIs, targets, cadence)
+
+A simple way to pressure-test strategy is the “Three Fits” checklist:
+1) Problem–solution fit: the offer clearly solves a real, frequent problem.
+2) Product–market fit: customers repeatedly buy/renew and recommend.
+3) Channel–message fit: acquisition works at a sustainable CAC and payback.
+
+2. The Funnel and What to Measure
+Most teams talk about “the funnel,” but measurement breaks when stages are vague. Define stages in your own language and attach a metric to each one.
+
+Example funnel (B2C or B2B):
+- Reach: impressions, unique users, viewable CPM, share of voice
+- Engagement: CTR, time on site, video completion rate, add-to-cart
+- Consideration: product page views, lead form starts, trial sign-ups
+- Conversion: purchases, qualified leads, booked meetings, activation events
+- Retention: repeat purchase rate, churn, DAU/MAU, cohort retention
+- Advocacy: referrals, reviews, NPS, UGC volume
+
+Rule of thumb: optimize one primary metric per stage and use guardrails to prevent “local maximum” behavior (e.g., higher CTR but lower conversion rate).
+
+3. Customer Segmentation (Practical Methods)
+Segmentation is how you avoid treating everyone the same. Common segmentation approaches:
+- RFM: Recency, Frequency, Monetary value (great for retail and subscriptions)
+- Lifecycle: new, active, at-risk, churned, win-back
+- Behavioral: categories browsed, content consumed, features used
+- Needs-based: what outcome the customer is trying to achieve
+- Value-based: LTV tiers (e.g., Platinum/Gold/Silver)
+
+RFM quick guide:
+- Recency: days since last purchase/session (lower is better)
+- Frequency: number of purchases/sessions in a window
+- Monetary: revenue or margin in a window
+Practical use: route high-RFM “VIP” customers to loyalty perks; route “at-risk” customers to win-back and service recovery offers.
+
+4. Personalization and Next Best Action
+Personalization should be explainable. The safest pattern is: segment → rule-based offers → model-based ranking.
+
+A “next best action” playbook often includes:
+- Next best product (recommendations)
+- Next best channel (email vs SMS vs push vs paid retargeting)
+- Next best timing (send-time optimization)
+- Next best offer (discount, bundle, free shipping, trial extension)
+
+Start simple:
+1) Build eligibility rules (inventory, compliance, customer preferences).
+2) Score options (propensity, expected margin, churn risk).
+3) Apply constraints (frequency caps, budget caps).
+4) Log outcomes to learn and improve.
+
+5. Offer Design and Promotions
+Offers work when they reduce a specific barrier:
+- Risk barrier: free trial, warranty, easy returns
+- Price barrier: discount, financing, bundles
+- Trust barrier: reviews, guarantees, certifications
+- Effort barrier: one-click purchase, pre-filled forms
+
+Promotion planning checklist:
+- Objective (new customers, reactivation, AOV lift, cross-sell)
+- Target segment and exclusion rules
+- Offer mechanics (percentage vs dollars, thresholds, bundles)
+- Creative angle (one message)
+- Timing and frequency caps
+- Measurement plan (incremental lift and ROI)
+
+Common mistakes:
+- Measuring only last-click conversions
+- Discounting customers who would have bought anyway
+- Ignoring margin and operational constraints
+
+6. Marketing Analytics: Attribution vs Incrementality
+Attribution assigns credit. Incrementality asks: “Did the marketing cause the outcome?”
+
+Useful definitions:
+- Attribution: rules or models that allocate credit across touchpoints.
+- Incrementality: the causal impact of marketing, typically measured with experiments.
+
+When to use what:
+- Use attribution for directional decisions (budget allocation, channel hygiene).
+- Use incrementality for high-stakes spend decisions (new channels, large campaigns).
+
+Practical toolkit:
+- A/B tests: randomized holdouts to measure lift
+- Geo tests: split regions for offline/brand impact
+- PSA tests: public service ads as control in paid channels
+- MMM: aggregate-level modeling (useful when user-level tracking is limited)
+
+A good habit: treat attribution as “diagnostic,” and confirm big bets with incrementality.
+
+7. A/B Testing and Experiment Design
+A/B testing is a decision tool, not a science project. Keep it simple:
+- One hypothesis
+- One primary metric
+- One clear stopping rule
+
+Common experiment types:
+- Creative test: headline/offer/CTA
+- Audience test: segment targeting
+- Landing page test: layout, copy, form friction
+- Pricing test: thresholds, bundles
+
+Minimum checklist:
+- Randomization and traffic split
+- Guardrail metrics (refunds, unsubscribe rate, site errors)
+- Sample size estimate or a fixed test window
+- Avoid changing multiple variables at once unless you are doing a factorial design
+
+8. CRM Messaging: Email and SMS Best Practices
+Email best practices:
+- Use a clear subject line that matches the body promise.
+- Keep the first 100 characters strong (preheader matters).
+- One primary CTA per email.
+- Use a preference center and honor opt-outs promptly.
+- Track deliverability: bounce rate, spam complaint rate, inbox placement.
+
+SMS best practices:
+- Use SMS for urgent, time-sensitive messages.
+- Keep it short; include a clear opt-out instruction.
+- Respect quiet hours and frequency caps.
+- Personalize with context: order status, appointment time, limited-time offer.
+
+Lifecycle flows you can implement quickly:
+- Welcome series (3–5 touches)
+- Abandoned browse/cart
+- Post-purchase education and cross-sell
+- Win-back (at-risk → churned)
+- VIP perks and loyalty updates
+
+9. KPI Glossary (Common Marketing Metrics)
+Core efficiency metrics:
+- CAC: Customer acquisition cost (spend / new customers)
+- CPA: Cost per acquisition/action (spend / actions)
+- ROAS: Return on ad spend (revenue / ad spend)
+- MER: Marketing efficiency ratio (revenue / total marketing spend)
+
+Funnel metrics:
+- CTR: Click-through rate (clicks / impressions)
+- CVR: Conversion rate (conversions / visits)
+- AOV: Average order value (revenue / orders)
+- LTV: Lifetime value (expected margin over customer life)
+
+Retention metrics:
+- Churn rate: percent of customers who stop in a period
+- Repeat purchase rate: percent who buy again within a window
+- Cohort retention: retention tracked by signup/purchase cohort
+
+Quality metrics:
+- Refund rate, return rate, chargeback rate
+- Unsubscribe rate, complaint rate, deliverability indicators
+
+10. Handling PII and Data Privacy (High-Level Guidance)
+PII (personally identifiable information) must be handled with minimization and purpose limitation:
+- Collect only what you need to deliver the service or measurement.
+- Store PII securely (encryption at rest and in transit).
+- Control access (least privilege) and audit access.
+- Define retention periods and delete when no longer needed.
+- Use anonymization/pseudonymization where possible.
+- Keep consent and opt-out logs, and honor them across channels.
+
+For marketing systems, a practical approach is:
+1) Separate identifiers (email, phone) from behavioral events when feasible.
+2) Use hashed identifiers for joins.
+3) Avoid placing raw PII into LLM prompts or logs.
+4) Redact/Mask PII before indexing documents if they can be uploaded by users.
+
+11. Sample Q&A Prompts to Test a RAG Agent
+Use these questions to test retrieval, reranking, and grounded generation:
+1) “What is the difference between attribution and incrementality?”
+2) “How do I design a win-back campaign for at-risk customers?”
+3) “List best practices for SMS frequency caps and compliance.”
+4) “Which KPI should I use to measure the efficiency of paid social?”
+5) “How can I structure a basic A/B test for a landing page?”
+6) “What are the common reasons promotions fail to increase profit?”
+7) “How should we handle PII in marketing analytics and LLM prompts?”
+
+12. Mini Case Study: Launching a New Promotion (Example)
+Scenario: An e-commerce brand wants to increase revenue in the next 2 weeks without hurting margin.
+
+Plan:
+- Segment customers: VIP (high LTV), active, at-risk, new.
+- Offer: VIP gets early access + bundle; at-risk gets free shipping; new gets first-purchase incentive.
+- Channels: email + paid retargeting; SMS only for VIP and cart abandoners.
+- Measurement: primary KPI = incremental gross profit; guardrails = refund rate and unsubscribe rate.
+- Execution: A/B test subject lines for email; cap frequency to avoid fatigue.
+- Post-analysis: compare holdout vs exposed groups to estimate incrementality.
+
