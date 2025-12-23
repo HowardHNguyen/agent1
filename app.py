@@ -40,28 +40,50 @@ with st.expander("How to Use (Quick Guide)", expanded=False):
         """
 ### Step-by-step
 
-**1) Upload**
-Upload one or more `.txt` documents (playbooks, SOPs, briefs, KPI definitions, FAQs, etc.).
+**This demo shows how an AI Agent ingests knowledge, retrieves relevant information, and generates grounded answers.**
 
-**2) Index uploaded files (required)**
+**Step 1 - Upload documents**
+
+Upload one or more `.txt` files (e.g., marketing playbooks, experiment frameworks, KPI definitions, governance docs).
+
+**Step 2 - Index uploaded files (required)**
+
 Click **Index uploaded files** to:
-- chunk the text (word-safe),
-- embed each chunk,
-- store them in the vector index (ChromaDB).
+- split documents into semantic chunks,
+- generate embeddings,
+- store them in the vector database (ChromaDB).
 
-> Uploading alone does not make documents searchable — indexing loads knowledge into the agent.
+> Uploading alone does not make documents searchable — indexing loads knowledge into the agent. This step loads knowledge into the agent so it can answer questions.
 
-**3) Ask a question**
-Ask something answerable from your docs, e.g.:
+✅ You only need to index again when documents changes.
+
+**Step 3 - (Optional) Reset the knowledge base**
+
+Click **Reset vector DB (delete index)** when you want to:
+- completely clear the indexed knowledge,
+- start fresh with a new set of documents,
+- avoid mixing old and new content.
+
+⚠️ This permanently deletes the current index and requires re-indexing.
+
+**Step 4 - Ask a question**
+
+Enter a natural-language question based on the uploaded content, such as:
 - “How should we structure a basic A/B test for a landing page?”
 - “What is the difference between attribution and incrementality?”
 - “How should we handle PII in marketing analytics and AI prompts?”
 
-**4) Run Agent**
-Click **Run Agent**. The app shows:
-- the grounded answer,
-- source evidence,
-- optional technical details.
+**Step 5 - Run the Agent**
+
+Click **RUN AGENT** to:
+- retrieve the most relevant document sections,
+- rerank them for precision,
+- generate a grounded response using an LLM.
+
+The app displays:
+- the **final answer** (for business review),
+- **source evidence** (for trust and transparency),
+- optional **technical details** (for engineering review).
 
 **Tip**
 If you see **No documents were retrieved**, indexing hasn’t happened yet (or the index is empty).
