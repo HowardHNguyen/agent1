@@ -85,8 +85,7 @@ The app displays:
 - **source evidence** (for trust and transparency),
 - optional **technical details** (for engineering review).
 
-**Tip**
-⚠️ If you see **No documents were retrieved**, indexing hasn’t happened yet (or the index is empty).
+**Tip**: If you see **No documents were retrieved**, indexing hasn’t happened yet (or the index is empty).
         """.strip()
     )
 
@@ -318,7 +317,7 @@ def advanced_rag_pipeline(query: str, mode: str, top_k: int):
 
     if not retrieved:
         return transformed, route, [], "", (
-            "No documents were retrieved. "
+            "⚠️ No documents were retrieved. "
             "Please click **Index uploaded files** first, then ask your question again."
         )
 
