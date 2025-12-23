@@ -1,7 +1,7 @@
 import os
 import re
 import uuid
-import shutil
+import tempfile
 import streamlit as st
 
 from sentence_transformers import SentenceTransformer, CrossEncoder
@@ -139,13 +139,15 @@ llm = load_llm()
 
 
 # -----------------------------
-# Chroma (NO caching for client/collection to avoid stale handles)
+# Chroma (Streamlit Cloud: MUST write to /tmp)
 # -----------------------------
-CHROMA_PATH = "./chroma_db"
+CHROMA_PATH = os.path.join(tempfile.gettempdir(), "chroma_db")
 CHROMA_COLLECTION = "rag_docs"
 
 
 def get_chroma_client():
+    # Ensure directory exists (writable)
+    os.makedirs(CHROMA_PATH, exist_ok=True)
     settings = ChromaSettings(anonymized_telemetry=False, allow_reset=True)
     return chromadb.PersistentClient(path=CHROMA_PATH, settings=settings)
 
@@ -153,7 +155,8 @@ def get_chroma_client():
 def get_chroma_collection():
     client = get_chroma_client()
     col = client.get_or_create_collection(
-        name=CHROMA_COLLECTION, metadata={"hnsw:space": "cosine"}
+        name=CHROMA_COLLECTION,
+        metadata={"hnsw:space": "cosine"},
     )
     return client, col
 
@@ -183,9 +186,7 @@ es = get_es_client()
 # -----------------------------
 def simple_chunk(text: str, chunk_size: int = 900, overlap: int = 120):
     """
-    Word-boundary safe chunker:
-    - avoids starting/ending chunks in the middle of a word
-    - preserves overlap for continuity
+    Word-boundary safe chunker
     """
     text = re.sub(r"\s+", " ", (text or "")).strip()
     if not text:
@@ -196,7 +197,6 @@ def simple_chunk(text: str, chunk_size: int = 900, overlap: int = 120):
     start = 0
 
     while start < n:
-        # Ensure chunk start is at a word boundary
         if start > 0 and text[start] != " " and text[start - 1] != " ":
             next_space = text.find(" ", start)
             if next_space == -1:
@@ -205,7 +205,6 @@ def simple_chunk(text: str, chunk_size: int = 900, overlap: int = 120):
 
         end = min(n, start + chunk_size)
 
-        # Ensure chunk end is at a word boundary
         if end < n and text[end] != " ":
             last_space = text.rfind(" ", start, end)
             if last_space > start:
@@ -255,11 +254,11 @@ def safe_preview(text: str, limit: int = 700) -> str:
 
 
 # -----------------------------
-# Chroma: batched upsert helpers (more stable on Streamlit Cloud)
+# Chroma: batched upsert helpers
 # -----------------------------
 def batched(lst, batch_size: int):
     for i in range(0, len(lst), batch_size):
-        yield lst[i : i + batch_size]
+        yield lst[i:i + batch_size]
 
 
 def chroma_upsert_batched(collection, docs: list[str], batch_size_docs: int = 64) -> int:
@@ -403,13 +402,11 @@ uploaded = st.sidebar.file_uploader(
 chunk_size = st.sidebar.slider("Chunk size (chars)", 300, 1500, 900, 50)
 overlap = st.sidebar.slider("Overlap (chars)", 0, 400, 120, 20)
 
-# ✅ Safer reset: client.reset() (avoids deleting while db handle open)
 if st.sidebar.button("Reset vector DB (delete index)"):
     try:
         client = get_chroma_client()
         client.reset()
-        st.cache_resource.clear()
-        st.sidebar.success("Vector DB reset. App will reload — please re-index your files.")
+        st.sidebar.success("Vector DB reset. Please re-index your files.")
         st.rerun()
     except Exception as e:
         st.sidebar.error(f"Reset failed: {type(e).__name__}")
@@ -431,7 +428,7 @@ if st.sidebar.button("Index uploaded files"):
             else:
                 _, collection = get_chroma_collection()
                 added = chroma_upsert_batched(collection, all_chunks, batch_size_docs=64)
-                st.sidebar.success(f"Indexed {added} chunks into Chroma.")
+                st.sidebar.success(f"Indexed {added} chunks into Chroma (stored in /tmp).")
         except Exception as e:
             st.sidebar.error(f"Indexing failed: {type(e).__name__}")
             st.sidebar.caption(str(e))
@@ -465,7 +462,6 @@ if run and query.strip():
     with st.spinner("Generating grounded answer..."):
         transformed, route, ranked, context, answer = advanced_rag_pipeline(query, mode=mode, top_k=top_k)
 
-    # ✅ Answer FIRST (prominent)
     st.subheader("Answer")
     st.caption("Grounded response generated from the indexed documents (with visible evidence below).")
     st.markdown(
@@ -477,7 +473,6 @@ if run and query.strip():
         unsafe_allow_html=True,
     )
 
-    # ✅ Evidence next
     if ranked:
         with st.expander("Why this answer? (Source Evidence)", expanded=True):
             for i, d in enumerate(ranked, start=1):
@@ -488,7 +483,6 @@ if run and query.strip():
                 st.markdown(safe_preview(d.get("text", ""), limit=700))
                 st.markdown("---")
 
-    # ✅ Technical details last
     with st.expander("Technical Details (for engineering review)", expanded=False):
         st.write(f"**Transformed query:** {transformed}")
         st.write(f"**Retrieval route:** {route}")
