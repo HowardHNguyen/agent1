@@ -1,6 +1,7 @@
 import os
 import re
 import uuid
+import shutil
 import streamlit as st
 
 from sentence_transformers import SentenceTransformer, CrossEncoder
@@ -23,78 +24,72 @@ st.set_page_config(page_title="Advanced RAG Agent", layout="wide")
 
 st.title("Advanced RAG Agent (Query Routing + Fusion Retrieval + Rerank + LLM)")
 
-# --- Collapsible sections ---
+
+# -----------------------------
+# Collapsible sections (Top)
+# -----------------------------
 with st.expander("How to Use (Quick Guide)", expanded=False):
     st.markdown(
         """
 ### Step-by-step
 
 **1) Upload**
-Upload one or more `.txt` documents (marketing playbooks, SOPs, briefs, KPI definitions, FAQs, etc.).
+Upload one or more `.txt` documents (playbooks, SOPs, briefs, KPI definitions, FAQs, etc.).
 
 **2) Index uploaded files (required)**
 Click **Index uploaded files** to:
-- chunk the text,
+- chunk the text (word-safe),
 - embed each chunk,
 - store them in the vector index (ChromaDB).
 
-> Uploading alone does not make documents searchable — indexing is what “loads” knowledge into the agent.
+> Uploading alone does not make documents searchable — indexing loads knowledge into the agent.
 
 **3) Ask a question**
-Ask something that can be answered from your documents, for example:
+Ask something answerable from your docs, e.g.:
 - “How should we structure a basic A/B test for a landing page?”
 - “What is the difference between attribution and incrementality?”
 - “How should we handle PII in marketing analytics and AI prompts?”
 
 **4) Run Agent**
-Click **Run Agent**. The app will display:
-- the final grounded answer,
-- source evidence (retrieved chunks),
+Click **Run Agent**. The app shows:
+- the grounded answer,
+- source evidence,
 - optional technical details.
 
 **Tip**
-If the agent says **No documents were retrieved**, it usually means indexing hasn’t happened yet
-(or the index is empty).
+If you see **No documents were retrieved**, indexing hasn’t happened yet (or the index is empty).
         """.strip()
     )
 
 with st.expander("About This Agent", expanded=False):
     st.markdown(
         """
-### Models & Technologies Used
+### What this demo shows
+A production-style **Retrieval-Augmented Generation (RAG) AI Agent**: retrieve relevant content from your indexed
+documents, rerank for precision, then generate a grounded response with an LLM.
 
-This AI agent is built using a **modern, modular AI stack** designed to mirror how
-production-grade AI systems are implemented in enterprise environments.
+### Models & Technologies
+- **LLM:** Groq-hosted LLM (LLaMA family) for final answer synthesis
+- **Embeddings:** Sentence-Transformers for semantic search
+- **Vector DB:** ChromaDB (local-first; swappable with enterprise vector DBs)
+- **Reranker:** Cross-Encoder reranker (query–chunk pair scoring)
 
-#### Language Model (LLM)
-- **Groq-hosted LLM (LLaMA family)**  
-  Used exclusively for **final answer synthesis**, not retrieval.
-- The LLM is constrained to generate responses **only from retrieved context** to reduce hallucinations.
+### Why this scales to enterprise
+This architecture scales because it separates **ingestion**, **retrieval**, **ranking**, and **generation** into modular,
+governable components. It starts as a fast prototype (Streamlit + local vector DB) and evolves into production by swapping
+in enterprise equivalents (managed vector search, centralized logging/monitoring, RBAC/ABAC, scheduled indexing pipelines).
+It supports compliance workflows by keeping the LLM grounded in retrieved context and enabling auditability via visible
+source evidence and generation context.
 
-#### Embedding Model
-- **Sentence-Transformers (Transformer embeddings)**  
-  Converts document chunks and user queries into dense vectors for semantic search.
+### How this integrates with MarTech / Data stacks
+- **AEP / AJO / CJA:** use approved playbooks, KPI definitions, governance docs as the grounding layer for journeys/measurement
+- **Salesforce:** index Knowledge/Case/FAQ content and enable consistent operational answers across teams
+- **Databricks:** schedule ingestion + redaction + embedding jobs; run evaluations, guardrails, monitoring
+- **Snowflake / CDPs:** govern source tables/views; attach metadata for access control and data boundaries
 
-#### Vector Database
-- **ChromaDB** (local-first vector store)  
-  Easily swappable with enterprise vector DBs (Pinecone, Weaviate, OpenSearch, etc.).
-
-#### Reranking Model
-- **Cross-Encoder reranker**  
-  Improves precision by jointly scoring (query, chunk) pairs.
-
-#### Query Routing & Retrieval Strategy
-- **Auto-routing** chooses a retrieval strategy (vector by default).
-- Architecture supports lexical/hybrid retrieval when enabled (e.g., Elastic).
-
-#### Context Management
-- **Context compression** selects only the most relevant passages to fit model limits and reduce noise.
-
-### Engineering Principles Demonstrated
-- **Separation of concerns** (retrieval, ranking, generation are modular)
-- **Explainability by design** (evidence is visible)
-- **Safety-first AI usage** (avoid putting raw PII into prompts)
-- **Enterprise extensibility** (components can be upgraded independently)
+### Simple architecture diagram (for decks)
+**User → Streamlit UI → Retriever (Vector / optional Lexical+Fusion) → Reranker → Context Builder → LLM (Groq) → Answer**
+with **Source Evidence** and **Context Used** shown for trust/audit.
         """.strip()
     )
 
@@ -103,17 +98,17 @@ production-grade AI systems are implemented in enterprise environments.
 # Secrets / Keys
 # -----------------------------
 def get_secret(name: str, default: str = "") -> str:
-    # Streamlit secrets first, then env var
     return st.secrets.get(name, os.environ.get(name, default))
 
 GROQ_API_KEY = get_secret("GROQ_API_KEY")
-if not GROQ_API_KEY:
-    st.warning("Missing GROQ_API_KEY. Add it in Streamlit → Settings → Secrets, or as an environment variable.")
 
 # Optional Elastic Cloud secrets
 ELASTIC_URL = get_secret("ELASTIC_URL")
-ELASTIC_API_KEY = get_secret("ELASTIC_API_KEY")  # preferred over basic auth
+ELASTIC_API_KEY = get_secret("ELASTIC_API_KEY")
 ELASTIC_INDEX = get_secret("ELASTIC_INDEX", "documents")
+
+if not GROQ_API_KEY:
+    st.warning("Missing GROQ_API_KEY. Add it in Streamlit → Settings → Secrets, or as an environment variable.")
 
 
 # -----------------------------
@@ -152,18 +147,63 @@ collection = get_chroma_collection()
 
 
 # -----------------------------
+# Optional Elasticsearch
+# -----------------------------
+def get_es_client():
+    if not Elasticsearch:
+        return None
+    if not ELASTIC_URL or not ELASTIC_API_KEY:
+        return None
+    try:
+        return Elasticsearch(ELASTIC_URL, api_key=ELASTIC_API_KEY)
+    except Exception:
+        return None
+
+es = get_es_client()
+
+
+# -----------------------------
 # Text utilities
 # -----------------------------
 def simple_chunk(text: str, chunk_size: int = 900, overlap: int = 120):
-    text = re.sub(r"\s+", " ", text).strip()
+    """
+    Word-boundary safe chunker:
+    - avoids starting or ending chunks in the middle of a word
+    - preserves overlap for continuity
+    """
+    text = re.sub(r"\s+", " ", (text or "")).strip()
     if not text:
         return []
+
     chunks = []
+    n = len(text)
     start = 0
-    while start < len(text):
-        end = min(len(text), start + chunk_size)
-        chunks.append(text[start:end])
-        start = max(end - overlap, start + 1)
+
+    while start < n:
+        # Ensure chunk start is at a word boundary
+        if start > 0 and text[start] != " " and text[start - 1] != " ":
+            next_space = text.find(" ", start)
+            if next_space == -1:
+                break
+            start = next_space + 1
+
+        end = min(n, start + chunk_size)
+
+        # Ensure chunk end is at a word boundary
+        if end < n and text[end] != " ":
+            last_space = text.rfind(" ", start, end)
+            if last_space > start:
+                end = last_space
+
+        chunk = text[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+
+        if end >= n:
+            break
+
+        start = max(0, end - overlap)
+
     return chunks
 
 def advanced_query_transformation(query: str) -> str:
@@ -190,30 +230,15 @@ def advanced_query_routing(query: str) -> str:
     return "vector"
 
 def safe_preview(text: str, limit: int = 700) -> str:
-    """Word-safe preview: avoids chopping the first character, preserves whole words."""
     t = (text or "").strip()
     if len(t) <= limit:
         return t
-    # keep whole words
     return t[:limit].rsplit(" ", 1)[0] + "..."
 
 
 # -----------------------------
-# Optional Elasticsearch
+# Retrieval
 # -----------------------------
-def get_es_client():
-    if not Elasticsearch:
-        return None
-    if not ELASTIC_URL or not ELASTIC_API_KEY:
-        return None
-    try:
-        return Elasticsearch(ELASTIC_URL, api_key=ELASTIC_API_KEY)
-    except Exception:
-        return None
-
-es = get_es_client()
-
-
 def vector_retrieve(query: str, top_k: int):
     q_emb = embedder.encode([query])[0].tolist()
     res = collection.query(query_embeddings=[q_emb], n_results=top_k)
@@ -254,7 +279,6 @@ def fusion_retrieval(query: str, top_k: int):
             unique.append(item)
     return unique[: (top_k * 2)]
 
-
 def rerank_documents(query: str, docs: list, top_k: int):
     if not docs:
         return []
@@ -288,12 +312,10 @@ def generate_answer(query: str, context: str):
         f"USER QUERY:\n{query}\n\n"
         f"CONTEXT:\n{context}\n"
     )
-
     try:
         return llm.invoke(prompt).content
     except Exception as e:
         return f"Groq call failed: {type(e).__name__}: {str(e)}"
-
 
 def advanced_rag_pipeline(query: str, mode: str, top_k: int):
     transformed = advanced_query_transformation(query)
@@ -319,12 +341,11 @@ def advanced_rag_pipeline(query: str, mode: str, top_k: int):
     ranked = rerank_documents(query, retrieved, top_k=top_k)
     context = select_and_compress_context(ranked)
     answer = generate_answer(query, context)
-
     return transformed, route, ranked, context, answer
 
 
 # -----------------------------
-# Sidebar: Ingest Docs
+# Sidebar: Ingest Docs + Reset
 # -----------------------------
 st.sidebar.header("1) Add / Index Documents")
 
@@ -336,6 +357,13 @@ uploaded = st.sidebar.file_uploader(
 
 chunk_size = st.sidebar.slider("Chunk size (chars)", 300, 1500, 900, 50)
 overlap = st.sidebar.slider("Overlap (chars)", 0, 400, 120, 20)
+
+# ✅ Reset DB button (deletes chroma_db, clears caches, reruns)
+if st.sidebar.button("Reset vector DB (delete index)"):
+    shutil.rmtree("./chroma_db", ignore_errors=True)
+    st.cache_resource.clear()
+    st.sidebar.success("Vector DB reset. The app will reload — please re-index your files.")
+    st.rerun()
 
 if st.sidebar.button("Index uploaded files"):
     if not uploaded:
@@ -358,15 +386,16 @@ if st.sidebar.button("Index uploaded files"):
 
 st.sidebar.header("2) Retrieval Settings")
 
+# ✅ Turn off lexical/fusion in UI unless Elastic is truly available
 retrieval_options = ["auto", "vector"]
-if es:
+if es:  # only show if configured & client created
     retrieval_options += ["lexical", "fusion"]
 
 mode = st.sidebar.selectbox("Retrieval mode", retrieval_options)
 top_k = st.sidebar.slider("Top-K", 2, 10, 5)
 
 if not es:
-    st.sidebar.caption("Tip: Elastic (lexical/fusion) is hidden because ELASTIC_URL / ELASTIC_API_KEY are not set.")
+    st.sidebar.caption("Lexical/Fusion are hidden (Elastic not configured).")
 
 show_scores = st.sidebar.checkbox("Show technical relevance scores", value=False)
 
@@ -375,7 +404,6 @@ show_scores = st.sidebar.checkbox("Show technical relevance scores", value=False
 # Main: Executive-first Q&A UI
 # -----------------------------
 query = st.text_input("Ask a question")
-
 run = st.button("RUN AGENT")
 
 if run and query.strip():
@@ -412,7 +440,7 @@ if run and query.strip():
         st.write(f"**Top-K:** {top_k}")
 
         with st.expander("Context used for generation", expanded=False):
-            st.text(context)
+            st.text_area("Context", value=context, height=260)
 
 
 # -----------------------------
