@@ -86,7 +86,7 @@ The app displays:
 - optional **technical details** (for engineering review).
 
 **Tip**
-If you see **No documents were retrieved**, indexing hasn’t happened yet (or the index is empty).
+⚠️ If you see **No documents were retrieved**, indexing hasn’t happened yet (or the index is empty).
         """.strip()
     )
 
