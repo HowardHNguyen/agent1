@@ -6,6 +6,7 @@ import streamlit as st
 
 from sentence_transformers import SentenceTransformer, CrossEncoder
 import chromadb
+from chromadb.config import Settings as ChromaSettings
 
 # Optional (only if you enable Elastic Cloud)
 try:
@@ -21,8 +22,24 @@ from langchain_groq import ChatGroq
 # App Config
 # -----------------------------
 st.set_page_config(page_title="Advanced RAG Agent", layout="wide")
-
 st.title("Advanced RAG Agent (Query Routing + Fusion Retrieval + Rerank + LLM)")
+
+
+# -----------------------------
+# Secrets / Keys
+# -----------------------------
+def get_secret(name: str, default: str = "") -> str:
+    return st.secrets.get(name, os.environ.get(name, default))
+
+GROQ_API_KEY = get_secret("GROQ_API_KEY")
+
+# Optional Elastic Cloud secrets
+ELASTIC_URL = get_secret("ELASTIC_URL")
+ELASTIC_API_KEY = get_secret("ELASTIC_API_KEY")
+ELASTIC_INDEX = get_secret("ELASTIC_INDEX", "documents")
+
+if not GROQ_API_KEY:
+    st.warning("Missing GROQ_API_KEY. Add it in Streamlit → Settings → Secrets, or as an environment variable.")
 
 
 # -----------------------------
@@ -82,33 +99,16 @@ It supports compliance workflows by keeping the LLM grounded in retrieved contex
 source evidence and generation context.
 
 ### How this integrates with MarTech / Data stacks
-- **AEP / AJO / CJA:** use approved playbooks, KPI definitions, governance docs as the grounding layer for journeys/measurement
+- **AEP / AJO / CJA:** index playbooks, KPI definitions, governance docs; ground measurement and journey decisions
 - **Salesforce:** index Knowledge/Case/FAQ content and enable consistent operational answers across teams
 - **Databricks:** schedule ingestion + redaction + embedding jobs; run evaluations, guardrails, monitoring
-- **Snowflake / CDPs:** govern source tables/views; attach metadata for access control and data boundaries
+- **Snowflake / CDPs:** govern source tables/views; attach metadata for access control and boundaries
 
 ### Simple architecture diagram (for decks)
 **User → Streamlit UI → Retriever (Vector / optional Lexical+Fusion) → Reranker → Context Builder → LLM (Groq) → Answer**
 with **Source Evidence** and **Context Used** shown for trust/audit.
         """.strip()
     )
-
-
-# -----------------------------
-# Secrets / Keys
-# -----------------------------
-def get_secret(name: str, default: str = "") -> str:
-    return st.secrets.get(name, os.environ.get(name, default))
-
-GROQ_API_KEY = get_secret("GROQ_API_KEY")
-
-# Optional Elastic Cloud secrets
-ELASTIC_URL = get_secret("ELASTIC_URL")
-ELASTIC_API_KEY = get_secret("ELASTIC_API_KEY")
-ELASTIC_INDEX = get_secret("ELASTIC_INDEX", "documents")
-
-if not GROQ_API_KEY:
-    st.warning("Missing GROQ_API_KEY. Add it in Streamlit → Settings → Secrets, or as an environment variable.")
 
 
 # -----------------------------
@@ -135,19 +135,24 @@ llm = load_llm()
 
 
 # -----------------------------
-# Vector Store (Chroma)
+# Chroma (cached) - robust settings
 # -----------------------------
 @st.cache_resource
 def get_chroma_collection():
-    client = chromadb.PersistentClient(path="./chroma_db")
-    collection = client.get_or_create_collection(name="rag_docs")
+    settings = ChromaSettings(
+        anonymized_telemetry=False,
+        allow_reset=True,
+    )
+    client = chromadb.PersistentClient(path="./chroma_db", settings=settings)
+    # (Optional) metadata can help in some setups
+    collection = client.get_or_create_collection(name="rag_docs", metadata={"hnsw:space": "cosine"})
     return collection
 
 collection = get_chroma_collection()
 
 
 # -----------------------------
-# Optional Elasticsearch
+# Optional Elasticsearch - only "available" if reachable
 # -----------------------------
 def get_es_client():
     if not Elasticsearch:
@@ -155,7 +160,11 @@ def get_es_client():
     if not ELASTIC_URL or not ELASTIC_API_KEY:
         return None
     try:
-        return Elasticsearch(ELASTIC_URL, api_key=ELASTIC_API_KEY)
+        client = Elasticsearch(ELASTIC_URL, api_key=ELASTIC_API_KEY)
+        # ping to ensure reachable (if not reachable, we hide lexical/fusion in UI)
+        if not client.ping():
+            return None
+        return client
     except Exception:
         return None
 
@@ -168,7 +177,7 @@ es = get_es_client()
 def simple_chunk(text: str, chunk_size: int = 900, overlap: int = 120):
     """
     Word-boundary safe chunker:
-    - avoids starting or ending chunks in the middle of a word
+    - avoids starting/ending chunks in the middle of a word
     - preserves overlap for continuity
     """
     text = re.sub(r"\s+", " ", (text or "")).strip()
@@ -209,7 +218,6 @@ def simple_chunk(text: str, chunk_size: int = 900, overlap: int = 120):
 def advanced_query_transformation(query: str) -> str:
     q = re.sub(r"\s+", " ", query).strip()
     expansions = {
-        "movie": ["film", "cinema"],
         "heart attack": ["myocardial infarction", "MI"],
         "CVD": ["cardiovascular disease", "cardiac risk"]
     }
@@ -237,6 +245,37 @@ def safe_preview(text: str, limit: int = 700) -> str:
 
 
 # -----------------------------
+# Chroma: batched upsert helpers (fixes InternalError)
+# -----------------------------
+def batched(iterable, batch_size: int):
+    for i in range(0, len(iterable), batch_size):
+        yield iterable[i:i + batch_size]
+
+def chroma_upsert_batched(docs: list[str], batch_size_docs: int = 64, batch_size_embed: int = 64):
+    """
+    More stable on Streamlit Cloud:
+    - embed in batches
+    - upsert to Chroma in batches
+    """
+    if not docs:
+        return 0
+
+    total_added = 0
+
+    for doc_batch in batched(docs, batch_size_docs):
+        ids = [str(uuid.uuid4()) for _ in doc_batch]
+
+        # embed in a safe batch (often same as doc_batch size)
+        embeddings = embedder.encode(doc_batch).tolist()
+
+        # Use upsert (more resilient than add)
+        collection.upsert(ids=ids, documents=doc_batch, embeddings=embeddings)
+        total_added += len(doc_batch)
+
+    return total_added
+
+
+# -----------------------------
 # Retrieval
 # -----------------------------
 def vector_retrieve(query: str, top_k: int):
@@ -252,10 +291,8 @@ def lexical_retrieve(query: str, top_k: int):
     body = {"size": top_k, "query": {"match": {"content": query}}}
     try:
         r = es.search(index=ELASTIC_INDEX, body=body)
-    except Exception as e:
-        st.warning(f"Lexical retrieval unavailable (Elastic issue): {type(e).__name__}")
+    except Exception:
         return []
-
     hits = r.get("hits", {}).get("hits", [])
     out = []
     for h in hits:
@@ -358,44 +395,50 @@ uploaded = st.sidebar.file_uploader(
 chunk_size = st.sidebar.slider("Chunk size (chars)", 300, 1500, 900, 50)
 overlap = st.sidebar.slider("Overlap (chars)", 0, 400, 120, 20)
 
-# ✅ Reset DB button (deletes chroma_db, clears caches, reruns)
+# ✅ Hard reset (delete chroma_db + clear cache + rerun)
 if st.sidebar.button("Reset vector DB (delete index)"):
     shutil.rmtree("./chroma_db", ignore_errors=True)
     st.cache_resource.clear()
-    st.sidebar.success("Vector DB reset. The app will reload — please re-index your files.")
+    st.sidebar.success("Vector DB reset. App will reload — please re-index your files.")
     st.rerun()
 
 if st.sidebar.button("Index uploaded files"):
     if not uploaded:
         st.sidebar.error("Please upload at least one .txt file.")
     else:
-        added = 0
-        for f in uploaded:
-            text = f.read().decode("utf-8", errors="ignore")
-            chunks = simple_chunk(text, chunk_size=chunk_size, overlap=overlap)
-            if not chunks:
-                continue
+        try:
+            all_chunks = []
+            for f in uploaded:
+                text = f.read().decode("utf-8", errors="ignore")
+                chunks = simple_chunk(text, chunk_size=chunk_size, overlap=overlap)
+                all_chunks.extend([c for c in chunks if c and len(c.strip()) > 0])
 
-            ids = [str(uuid.uuid4()) for _ in chunks]
-            embs = embedder.encode(chunks).tolist()
-            collection.add(ids=ids, documents=chunks, embeddings=embs)
-            added += len(chunks)
+            if not all_chunks:
+                st.sidebar.error("No valid text chunks found. Please upload a non-empty .txt.")
+            else:
+                # ✅ Batched upsert (fixes Chroma InternalError)
+                added = chroma_upsert_batched(all_chunks, batch_size_docs=64, batch_size_embed=64)
+                st.sidebar.success(f"Indexed {added} chunks into Chroma.")
+        except Exception as e:
+            st.sidebar.error(f"Indexing failed: {type(e).__name__}")
+            st.sidebar.caption(str(e))
 
-        st.sidebar.success(f"Indexed {added} chunks into Chroma.")
 
-
+# -----------------------------
+# Retrieval Settings
+# -----------------------------
 st.sidebar.header("2) Retrieval Settings")
 
-# ✅ Turn off lexical/fusion in UI unless Elastic is truly available
+# ✅ Lexical/Fusion only visible if Elastic is configured AND reachable
 retrieval_options = ["auto", "vector"]
-if es:  # only show if configured & client created
+if es:
     retrieval_options += ["lexical", "fusion"]
 
 mode = st.sidebar.selectbox("Retrieval mode", retrieval_options)
 top_k = st.sidebar.slider("Top-K", 2, 10, 5)
 
 if not es:
-    st.sidebar.caption("Lexical/Fusion are hidden (Elastic not configured).")
+    st.sidebar.caption("Lexical/Fusion are hidden (Elastic not configured or not reachable).")
 
 show_scores = st.sidebar.checkbox("Show technical relevance scores", value=False)
 
@@ -410,7 +453,7 @@ if run and query.strip():
     with st.spinner("Generating grounded answer..."):
         transformed, route, ranked, context, answer = advanced_rag_pipeline(query, mode=mode, top_k=top_k)
 
-    # ✅ Answer FIRST and prominent
+    # ✅ Answer FIRST (prominent)
     st.subheader("Answer")
     st.caption("Grounded response generated from the indexed documents (with visible evidence below).")
     st.markdown(
@@ -433,12 +476,11 @@ if run and query.strip():
                 st.markdown(safe_preview(d.get("text", ""), limit=700))
                 st.markdown("---")
 
-    # ✅ Technical details last (optional)
+    # ✅ Technical details last
     with st.expander("Technical Details (for engineering review)", expanded=False):
         st.write(f"**Transformed query:** {transformed}")
         st.write(f"**Retrieval route:** {route}")
         st.write(f"**Top-K:** {top_k}")
-
         with st.expander("Context used for generation", expanded=False):
             st.text_area("Context", value=context, height=260)
 
