@@ -473,6 +473,7 @@ if run and query.strip():
         unsafe_allow_html=True,
     )
 
+
     if ranked:
         with st.expander("Why this answer? (Source Evidence)", expanded=True):
             for i, d in enumerate(ranked, start=1):
