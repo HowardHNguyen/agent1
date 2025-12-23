@@ -8,12 +8,6 @@ from sentence_transformers import SentenceTransformer, CrossEncoder
 import chromadb
 from chromadb.config import Settings as ChromaSettings
 
-# Optional (only if you enable Elastic Cloud)
-try:
-    from elasticsearch import Elasticsearch
-except Exception:
-    Elasticsearch = None
-
 # LLM (Groq via LangChain)
 from langchain_groq import ChatGroq
 
@@ -33,11 +27,6 @@ def get_secret(name: str, default: str = "") -> str:
 
 
 GROQ_API_KEY = get_secret("GROQ_API_KEY")
-
-# Optional Elastic Cloud secrets
-ELASTIC_URL = get_secret("ELASTIC_URL")
-ELASTIC_API_KEY = get_secret("ELASTIC_API_KEY")
-ELASTIC_INDEX = get_secret("ELASTIC_INDEX", "documents")
 
 if not GROQ_API_KEY:
     st.warning("Missing GROQ_API_KEY. Add it in Streamlit → Settings → Secrets, or as an environment variable.")
@@ -106,7 +95,7 @@ source evidence and generation context.
 - **Snowflake / CDPs:** govern source tables/views; attach metadata for access control and boundaries
 
 ### Simple architecture diagram (for decks)
-**User → Streamlit UI → Retriever (Vector / optional Lexical+Fusion) → Reranker → Context Builder → LLM (Groq) → Answer**
+**User → Streamlit UI → Retriever (Vector) → Reranker → Context Builder → LLM (Groq) → Answer**
 with **Source Evidence** and **Context Used** shown for trust/audit.
         """.strip()
     )
@@ -146,7 +135,6 @@ CHROMA_COLLECTION = "rag_docs"
 
 
 def get_chroma_client():
-    # Ensure directory exists (writable)
     os.makedirs(CHROMA_PATH, exist_ok=True)
     settings = ChromaSettings(anonymized_telemetry=False, allow_reset=True)
     return chromadb.PersistentClient(path=CHROMA_PATH, settings=settings)
@@ -159,26 +147,6 @@ def get_chroma_collection():
         metadata={"hnsw:space": "cosine"},
     )
     return client, col
-
-
-# -----------------------------
-# Optional Elasticsearch - only "available" if reachable
-# -----------------------------
-def get_es_client():
-    if not Elasticsearch:
-        return None
-    if not ELASTIC_URL or not ELASTIC_API_KEY:
-        return None
-    try:
-        client = Elasticsearch(ELASTIC_URL, api_key=ELASTIC_API_KEY)
-        if not client.ping():
-            return None
-        return client
-    except Exception:
-        return None
-
-
-es = get_es_client()
 
 
 # -----------------------------
@@ -238,14 +206,6 @@ def advanced_query_transformation(query: str) -> str:
     return q
 
 
-def advanced_query_routing(query: str) -> str:
-    q = query.lower()
-    lexical_triggers = ["exact", "quote", "verbatim", "title", "named", "who is", "when is", "where is"]
-    if any(t in q for t in lexical_triggers):
-        return "lexical"
-    return "vector"
-
-
 def safe_preview(text: str, limit: int = 700) -> str:
     t = (text or "").strip()
     if len(t) <= limit:
@@ -274,7 +234,7 @@ def chroma_upsert_batched(collection, docs: list[str], batch_size_docs: int = 64
 
 
 # -----------------------------
-# Retrieval
+# Retrieval (Vector only)
 # -----------------------------
 def vector_retrieve(query: str, top_k: int):
     _, collection = get_chroma_collection()
@@ -283,41 +243,6 @@ def vector_retrieve(query: str, top_k: int):
     docs = res.get("documents", [[]])[0]
     ids = res.get("ids", [[]])[0]
     return [{"id": ids[i], "text": docs[i], "source": "vector"} for i in range(len(docs))]
-
-
-def lexical_retrieve(query: str, top_k: int):
-    if not es:
-        return []
-    body = {"size": top_k, "query": {"match": {"content": query}}}
-    try:
-        r = es.search(index=ELASTIC_INDEX, body=body)
-    except Exception:
-        return []
-    hits = r.get("hits", {}).get("hits", [])
-    out = []
-    for h in hits:
-        out.append(
-            {
-                "id": h.get("_id", str(uuid.uuid4())),
-                "text": h.get("_source", {}).get("content", ""),
-                "source": "lexical",
-            }
-        )
-    return out
-
-
-def fusion_retrieval(query: str, top_k: int):
-    vec = vector_retrieve(query, top_k=top_k)
-    lex = lexical_retrieve(query, top_k=top_k)
-    combined = vec + lex
-    seen = set()
-    unique = []
-    for item in combined:
-        key = (item.get("text") or "")[:200]
-        if key and key not in seen:
-            seen.add(key)
-            unique.append(item)
-    return unique[: (top_k * 2)]
 
 
 def rerank_documents(query: str, docs: list, top_k: int):
@@ -364,17 +289,10 @@ def generate_answer(query: str, context: str):
 def advanced_rag_pipeline(query: str, mode: str, top_k: int):
     transformed = advanced_query_transformation(query)
 
-    if mode == "auto":
-        route = advanced_query_routing(transformed)
-    else:
-        route = mode
+    # Even if mode is "auto", we keep it simple for exec demo: Vector retrieval only
+    route = "vector"
 
-    if route == "vector":
-        retrieved = vector_retrieve(transformed, top_k=top_k)
-    elif route == "lexical":
-        retrieved = lexical_retrieve(transformed, top_k=top_k)
-    else:
-        retrieved = fusion_retrieval(transformed, top_k=top_k)
+    retrieved = vector_retrieve(transformed, top_k=top_k)
 
     if not retrieved:
         return transformed, route, [], "", (
@@ -435,20 +353,11 @@ if st.sidebar.button("Index uploaded files"):
 
 
 # -----------------------------
-# Retrieval Settings
+# Retrieval Settings (ONLY auto + vector)
 # -----------------------------
 st.sidebar.header("2) Retrieval Settings")
-
-retrieval_options = ["auto", "vector"]
-if es:
-    retrieval_options += ["lexical", "fusion"]
-
-mode = st.sidebar.selectbox("Retrieval mode", retrieval_options)
+mode = st.sidebar.selectbox("Retrieval mode", ["auto", "vector"])
 top_k = st.sidebar.slider("Top-K", 2, 10, 5)
-
-if not es:
-    st.sidebar.caption("Lexical/Fusion are hidden (Elastic not configured or not reachable).")
-
 show_scores = st.sidebar.checkbox("Show technical relevance scores", value=False)
 
 
@@ -464,15 +373,18 @@ if run and query.strip():
 
     st.subheader("Answer")
     st.caption("Grounded response generated from the indexed documents (with visible evidence below).")
+
     st.markdown(
         f"""
-<div style="background:#f8fafc; padding:16px; border-radius:10px; border:1px solid #e5e7eb; font-size:1.05rem;">
+<div style="background:#f8fafc; padding:16px; border-radius:10px; border:1px solid #e5e7eb; font-size:1.05rem; margin-bottom:14px;">
 {answer}
 </div>
         """.strip(),
         unsafe_allow_html=True,
     )
 
+    # ✅ extra spacing so Answer doesn't look glued to the expander
+    st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
 
     if ranked:
         with st.expander("Why this answer? (Source Evidence)", expanded=True):
