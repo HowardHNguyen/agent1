@@ -31,6 +31,7 @@ st.title("Advanced RAG Agent (Query Routing + Fusion Retrieval + Rerank + LLM)")
 def get_secret(name: str, default: str = "") -> str:
     return st.secrets.get(name, os.environ.get(name, default))
 
+
 GROQ_API_KEY = get_secret("GROQ_API_KEY")
 
 # Optional Elastic Cloud secrets
@@ -118,9 +119,11 @@ with **Source Evidence** and **Context Used** shown for trust/audit.
 def load_embedder():
     return SentenceTransformer("sentence-transformers/all-mpnet-base-v2")
 
+
 @st.cache_resource
 def load_reranker():
     return CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+
 
 @st.cache_resource
 def load_llm():
@@ -129,26 +132,30 @@ def load_llm():
     os.environ["GROQ_API_KEY"] = GROQ_API_KEY
     return ChatGroq(model="llama-3.3-70b-versatile", temperature=0, max_tokens=1024)
 
+
 embedder = load_embedder()
 reranker = load_reranker()
 llm = load_llm()
 
 
 # -----------------------------
-# Chroma (cached) - robust settings
+# Chroma (NO caching for client/collection to avoid stale handles)
 # -----------------------------
-@st.cache_resource
-def get_chroma_collection():
-    settings = ChromaSettings(
-        anonymized_telemetry=False,
-        allow_reset=True,
-    )
-    client = chromadb.PersistentClient(path="./chroma_db", settings=settings)
-    # (Optional) metadata can help in some setups
-    collection = client.get_or_create_collection(name="rag_docs", metadata={"hnsw:space": "cosine"})
-    return collection
+CHROMA_PATH = "./chroma_db"
+CHROMA_COLLECTION = "rag_docs"
 
-collection = get_chroma_collection()
+
+def get_chroma_client():
+    settings = ChromaSettings(anonymized_telemetry=False, allow_reset=True)
+    return chromadb.PersistentClient(path=CHROMA_PATH, settings=settings)
+
+
+def get_chroma_collection():
+    client = get_chroma_client()
+    col = client.get_or_create_collection(
+        name=CHROMA_COLLECTION, metadata={"hnsw:space": "cosine"}
+    )
+    return client, col
 
 
 # -----------------------------
@@ -161,12 +168,12 @@ def get_es_client():
         return None
     try:
         client = Elasticsearch(ELASTIC_URL, api_key=ELASTIC_API_KEY)
-        # ping to ensure reachable (if not reachable, we hide lexical/fusion in UI)
         if not client.ping():
             return None
         return client
     except Exception:
         return None
+
 
 es = get_es_client()
 
@@ -215,11 +222,12 @@ def simple_chunk(text: str, chunk_size: int = 900, overlap: int = 120):
 
     return chunks
 
+
 def advanced_query_transformation(query: str) -> str:
     q = re.sub(r"\s+", " ", query).strip()
     expansions = {
         "heart attack": ["myocardial infarction", "MI"],
-        "CVD": ["cardiovascular disease", "cardiac risk"]
+        "CVD": ["cardiovascular disease", "cardiac risk"],
     }
     extra_terms = []
     q_lower = q.lower()
@@ -230,12 +238,14 @@ def advanced_query_transformation(query: str) -> str:
         q = q + " (" + " OR ".join(extra_terms) + ")"
     return q
 
+
 def advanced_query_routing(query: str) -> str:
     q = query.lower()
     lexical_triggers = ["exact", "quote", "verbatim", "title", "named", "who is", "when is", "where is"]
     if any(t in q for t in lexical_triggers):
         return "lexical"
     return "vector"
+
 
 def safe_preview(text: str, limit: int = 700) -> str:
     t = (text or "").strip()
@@ -245,45 +255,36 @@ def safe_preview(text: str, limit: int = 700) -> str:
 
 
 # -----------------------------
-# Chroma: batched upsert helpers (fixes InternalError)
+# Chroma: batched upsert helpers (more stable on Streamlit Cloud)
 # -----------------------------
-def batched(iterable, batch_size: int):
-    for i in range(0, len(iterable), batch_size):
-        yield iterable[i:i + batch_size]
+def batched(lst, batch_size: int):
+    for i in range(0, len(lst), batch_size):
+        yield lst[i : i + batch_size]
 
-def chroma_upsert_batched(docs: list[str], batch_size_docs: int = 64, batch_size_embed: int = 64):
-    """
-    More stable on Streamlit Cloud:
-    - embed in batches
-    - upsert to Chroma in batches
-    """
+
+def chroma_upsert_batched(collection, docs: list[str], batch_size_docs: int = 64) -> int:
     if not docs:
         return 0
-
-    total_added = 0
-
+    total = 0
     for doc_batch in batched(docs, batch_size_docs):
         ids = [str(uuid.uuid4()) for _ in doc_batch]
-
-        # embed in a safe batch (often same as doc_batch size)
         embeddings = embedder.encode(doc_batch).tolist()
-
-        # Use upsert (more resilient than add)
         collection.upsert(ids=ids, documents=doc_batch, embeddings=embeddings)
-        total_added += len(doc_batch)
-
-    return total_added
+        total += len(doc_batch)
+    return total
 
 
 # -----------------------------
 # Retrieval
 # -----------------------------
 def vector_retrieve(query: str, top_k: int):
+    _, collection = get_chroma_collection()
     q_emb = embedder.encode([query])[0].tolist()
     res = collection.query(query_embeddings=[q_emb], n_results=top_k)
     docs = res.get("documents", [[]])[0]
     ids = res.get("ids", [[]])[0]
     return [{"id": ids[i], "text": docs[i], "source": "vector"} for i in range(len(docs))]
+
 
 def lexical_retrieve(query: str, top_k: int):
     if not es:
@@ -296,12 +297,15 @@ def lexical_retrieve(query: str, top_k: int):
     hits = r.get("hits", {}).get("hits", [])
     out = []
     for h in hits:
-        out.append({
-            "id": h.get("_id", str(uuid.uuid4())),
-            "text": h.get("_source", {}).get("content", ""),
-            "source": "lexical"
-        })
+        out.append(
+            {
+                "id": h.get("_id", str(uuid.uuid4())),
+                "text": h.get("_source", {}).get("content", ""),
+                "source": "lexical",
+            }
+        )
     return out
+
 
 def fusion_retrieval(query: str, top_k: int):
     vec = vector_retrieve(query, top_k=top_k)
@@ -316,6 +320,7 @@ def fusion_retrieval(query: str, top_k: int):
             unique.append(item)
     return unique[: (top_k * 2)]
 
+
 def rerank_documents(query: str, docs: list, top_k: int):
     if not docs:
         return []
@@ -323,6 +328,7 @@ def rerank_documents(query: str, docs: list, top_k: int):
     scores = reranker.predict(pairs)
     ranked = sorted(zip(docs, scores), key=lambda x: x[1], reverse=True)
     return [{"score": float(s), **d} for d, s in ranked[:top_k]]
+
 
 def select_and_compress_context(ranked_docs: list, max_chars: int = 3000):
     context_parts = []
@@ -339,6 +345,7 @@ def select_and_compress_context(ranked_docs: list, max_chars: int = 3000):
             break
     return "\n\n---\n\n".join(context_parts)
 
+
 def generate_answer(query: str, context: str):
     if not llm:
         return "LLM is not configured. Please add GROQ_API_KEY in Streamlit Secrets."
@@ -353,6 +360,7 @@ def generate_answer(query: str, context: str):
         return llm.invoke(prompt).content
     except Exception as e:
         return f"Groq call failed: {type(e).__name__}: {str(e)}"
+
 
 def advanced_rag_pipeline(query: str, mode: str, top_k: int):
     transformed = advanced_query_transformation(query)
@@ -389,18 +397,23 @@ st.sidebar.header("1) Add / Index Documents")
 uploaded = st.sidebar.file_uploader(
     "Upload .txt files (simple first version).",
     type=["txt"],
-    accept_multiple_files=True
+    accept_multiple_files=True,
 )
 
 chunk_size = st.sidebar.slider("Chunk size (chars)", 300, 1500, 900, 50)
 overlap = st.sidebar.slider("Overlap (chars)", 0, 400, 120, 20)
 
-# ✅ Hard reset (delete chroma_db + clear cache + rerun)
+# ✅ Safer reset: client.reset() (avoids deleting while db handle open)
 if st.sidebar.button("Reset vector DB (delete index)"):
-    shutil.rmtree("./chroma_db", ignore_errors=True)
-    st.cache_resource.clear()
-    st.sidebar.success("Vector DB reset. App will reload — please re-index your files.")
-    st.rerun()
+    try:
+        client = get_chroma_client()
+        client.reset()
+        st.cache_resource.clear()
+        st.sidebar.success("Vector DB reset. App will reload — please re-index your files.")
+        st.rerun()
+    except Exception as e:
+        st.sidebar.error(f"Reset failed: {type(e).__name__}")
+        st.sidebar.caption(str(e))
 
 if st.sidebar.button("Index uploaded files"):
     if not uploaded:
@@ -416,8 +429,8 @@ if st.sidebar.button("Index uploaded files"):
             if not all_chunks:
                 st.sidebar.error("No valid text chunks found. Please upload a non-empty .txt.")
             else:
-                # ✅ Batched upsert (fixes Chroma InternalError)
-                added = chroma_upsert_batched(all_chunks, batch_size_docs=64, batch_size_embed=64)
+                _, collection = get_chroma_collection()
+                added = chroma_upsert_batched(collection, all_chunks, batch_size_docs=64)
                 st.sidebar.success(f"Indexed {added} chunks into Chroma.")
         except Exception as e:
             st.sidebar.error(f"Indexing failed: {type(e).__name__}")
@@ -429,7 +442,6 @@ if st.sidebar.button("Index uploaded files"):
 # -----------------------------
 st.sidebar.header("2) Retrieval Settings")
 
-# ✅ Lexical/Fusion only visible if Elastic is configured AND reachable
 retrieval_options = ["auto", "vector"]
 if es:
     retrieval_options += ["lexical", "fusion"]
@@ -462,10 +474,10 @@ if run and query.strip():
 {answer}
 </div>
         """.strip(),
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
 
-    # ✅ Evidence next (business-friendly)
+    # ✅ Evidence next
     if ranked:
         with st.expander("Why this answer? (Source Evidence)", expanded=True):
             for i, d in enumerate(ranked, start=1):
@@ -502,5 +514,5 @@ st.markdown(
   </div>
 </div>
     """,
-    unsafe_allow_html=True
+    unsafe_allow_html=True,
 )
