@@ -23,8 +23,7 @@ st.set_page_config(page_title="Advanced RAG Agent", layout="wide")
 
 st.title("Advanced RAG Agent (Query Routing + Fusion Retrieval + Rerank + LLM)")
 
-# --- "How this works" expander with these two ---
-
+# --- Collapsible sections ---
 with st.expander("How to Use (Quick Guide)", expanded=False):
     st.markdown(
         """
@@ -49,11 +48,9 @@ Ask something that can be answered from your documents, for example:
 
 **4) Run Agent**
 Click **Run Agent**. The app will display:
-- the transformed query,
-- the retrieval route used,
-- the top reranked chunks (what the agent relied on),
 - the final grounded answer,
-- the context used for generation.
+- source evidence (retrieved chunks),
+- optional technical details.
 
 **Tip**
 If the agent says **No documents were retrieved**, it usually means indexing hasn’t happened yet
@@ -63,9 +60,7 @@ If the agent says **No documents were retrieved**, it usually means indexing has
 
 with st.expander("About This Agent", expanded=False):
     st.markdown(
-    """
----
-
+        """
 ### Models & Technologies Used
 
 This AI agent is built using a **modern, modular AI stack** designed to mirror how
@@ -74,55 +69,35 @@ production-grade AI systems are implemented in enterprise environments.
 #### Language Model (LLM)
 - **Groq-hosted LLM (LLaMA family)**  
   Used exclusively for **final answer synthesis**, not retrieval.
-- The LLM is intentionally constrained to generate responses **only from retrieved context**.
-- This reduces hallucination risk and supports governance and review workflows.
+- The LLM is constrained to generate responses **only from retrieved context** to reduce hallucinations.
 
 #### Embedding Model
-- **Sentence-Transformers (Transformer-based embeddings)**  
-  Converts document chunks and user queries into dense vector representations.
-- Enables **semantic similarity search** rather than keyword matching.
+- **Sentence-Transformers (Transformer embeddings)**  
+  Converts document chunks and user queries into dense vectors for semantic search.
 
 #### Vector Database
-- **ChromaDB**
-  - Lightweight, local-first vector store
-  - Fast semantic retrieval
-  - Easily swappable with enterprise vector databases (Pinecone, Weaviate, OpenSearch)
+- **ChromaDB** (local-first vector store)  
+  Easily swappable with enterprise vector DBs (Pinecone, Weaviate, OpenSearch, etc.).
 
 #### Reranking Model
-- **Cross-Encoder Neural Reranker**
-  - Evaluates query–document pairs jointly
-  - Improves precision over pure vector similarity
-  - Ensures the most relevant content is prioritized before generation
+- **Cross-Encoder reranker**  
+  Improves precision by jointly scoring (query, chunk) pairs.
 
 #### Query Routing & Retrieval Strategy
-- **Auto-routing logic**
-  - Routes queries to vector retrieval by default
-  - Architecture supports lexical and hybrid (fusion) retrieval when enabled
-- Demonstrates extensibility for multi-retriever strategies.
+- **Auto-routing** chooses a retrieval strategy (vector by default).
+- Architecture supports lexical/hybrid retrieval when enabled (e.g., Elastic).
 
 #### Context Management
-- **Context compression**
-  - Selects only the most relevant passages
-  - Prevents token overflow and reduces noise
-  - Improves answer quality and cost efficiency
-
----
+- **Context compression** selects only the most relevant passages to fit model limits and reduce noise.
 
 ### Engineering Principles Demonstrated
+- **Separation of concerns** (retrieval, ranking, generation are modular)
+- **Explainability by design** (evidence is visible)
+- **Safety-first AI usage** (avoid putting raw PII into prompts)
+- **Enterprise extensibility** (components can be upgraded independently)
+        """.strip()
+    )
 
-- **Separation of concerns**  
-  Retrieval, ranking, and generation are independent components.
-- **Explainability by design**  
-  Users can inspect retrieved chunks and relevance scores.
-- **Safety-first AI usage**  
-  No direct PII ingestion into LLM prompts.
-- **Enterprise extensibility**  
-  Each component can be upgraded or replaced without rewriting the system.
-
-This architecture reflects how AI copilots and decision-support tools are built
-inside modern MarTech, analytics, and data platforms.
-    """.strip()
-)
 
 # -----------------------------
 # Secrets / Keys
@@ -150,7 +125,6 @@ def load_embedder():
 
 @st.cache_resource
 def load_reranker():
-    # Strong lightweight reranker
     return CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
 @st.cache_resource
@@ -170,7 +144,6 @@ llm = load_llm()
 # -----------------------------
 @st.cache_resource
 def get_chroma_collection():
-    # Persistent storage path (works on Streamlit Cloud; resets if app redeploys)
     client = chromadb.PersistentClient(path="./chroma_db")
     collection = client.get_or_create_collection(name="rag_docs")
     return collection
@@ -194,9 +167,6 @@ def simple_chunk(text: str, chunk_size: int = 900, overlap: int = 120):
     return chunks
 
 def advanced_query_transformation(query: str) -> str:
-    # Keep your notebook’s idea, but make it practical:
-    # - normalize whitespace
-    # - expand a couple common synonyms (customize as you like)
     q = re.sub(r"\s+", " ", query).strip()
     expansions = {
         "movie": ["film", "cinema"],
@@ -213,14 +183,19 @@ def advanced_query_transformation(query: str) -> str:
     return q
 
 def advanced_query_routing(query: str) -> str:
-    # Simple routing heuristic:
-    # - lexical if user asks for exact quotes / exact titles / names
-    # - vector otherwise
     q = query.lower()
     lexical_triggers = ["exact", "quote", "verbatim", "title", "named", "who is", "when is", "where is"]
     if any(t in q for t in lexical_triggers):
         return "lexical"
     return "vector"
+
+def safe_preview(text: str, limit: int = 700) -> str:
+    """Word-safe preview: avoids chopping the first character, preserves whole words."""
+    t = (text or "").strip()
+    if len(t) <= limit:
+        return t
+    # keep whole words
+    return t[:limit].rsplit(" ", 1)[0] + "..."
 
 
 # -----------------------------
@@ -249,13 +224,10 @@ def vector_retrieve(query: str, top_k: int):
 def lexical_retrieve(query: str, top_k: int):
     if not es:
         return []
-
     body = {"size": top_k, "query": {"match": {"content": query}}}
-
     try:
         r = es.search(index=ELASTIC_INDEX, body=body)
     except Exception as e:
-        # ✅ Key fix: index missing or ES misconfigured → return empty instead of crashing
         st.warning(f"Lexical retrieval unavailable (Elastic issue): {type(e).__name__}")
         return []
 
@@ -264,22 +236,20 @@ def lexical_retrieve(query: str, top_k: int):
     for h in hits:
         out.append({
             "id": h.get("_id", str(uuid.uuid4())),
-            "text": h["_source"].get("content", ""),
+            "text": h.get("_source", {}).get("content", ""),
             "source": "lexical"
         })
     return out
 
-
 def fusion_retrieval(query: str, top_k: int):
-    # Combine and de-duplicate
     vec = vector_retrieve(query, top_k=top_k)
     lex = lexical_retrieve(query, top_k=top_k)
     combined = vec + lex
     seen = set()
     unique = []
     for item in combined:
-        key = item["text"][:200]
-        if key not in seen:
+        key = (item.get("text") or "")[:200]
+        if key and key not in seen:
             seen.add(key)
             unique.append(item)
     return unique[: (top_k * 2)]
@@ -294,11 +264,10 @@ def rerank_documents(query: str, docs: list, top_k: int):
     return [{"score": float(s), **d} for d, s in ranked[:top_k]]
 
 def select_and_compress_context(ranked_docs: list, max_chars: int = 3000):
-    # Simple “compression”: take top docs until we hit the budget.
     context_parts = []
     total = 0
     for d in ranked_docs:
-        t = d["text"].strip()
+        t = (d.get("text") or "").strip()
         if not t:
             continue
         if total + len(t) > max_chars:
@@ -389,53 +358,67 @@ if st.sidebar.button("Index uploaded files"):
 
 st.sidebar.header("2) Retrieval Settings")
 
-# Show lexical/fusion ONLY if Elastic is configured
 retrieval_options = ["auto", "vector"]
-if es:  # Elastic client exists only when ELASTIC_URL + ELASTIC_API_KEY are present
+if es:
     retrieval_options += ["lexical", "fusion"]
 
 mode = st.sidebar.selectbox("Retrieval mode", retrieval_options)
 top_k = st.sidebar.slider("Top-K", 2, 10, 5)
 
-# Optional: if Elastic is missing, keep a helpful hint (but user won't see lexical/fusion anyway)
-if (not es):
+if not es:
     st.sidebar.caption("Tip: Elastic (lexical/fusion) is hidden because ELASTIC_URL / ELASTIC_API_KEY are not set.")
 
+show_scores = st.sidebar.checkbox("Show technical relevance scores", value=False)
 
 
 # -----------------------------
-# Main Chat UI
+# Main: Executive-first Q&A UI
 # -----------------------------
 query = st.text_input("Ask a question")
 
-colA, colB = st.columns([1, 1])
+run = st.button("RUN AGENT")
 
-if st.button("RUN AGENT") and query.strip():
-    with st.spinner("Retrieving + reranking + generating answer..."):
+if run and query.strip():
+    with st.spinner("Generating grounded answer..."):
         transformed, route, ranked, context, answer = advanced_rag_pipeline(query, mode=mode, top_k=top_k)
 
+    # ✅ Answer FIRST and prominent
     st.subheader("Answer")
-    st.write(answer)
+    st.caption("Grounded response generated from the indexed documents (with visible evidence below).")
+    st.markdown(
+        f"""
+<div style="background:#f8fafc; padding:16px; border-radius:10px; border:1px solid #e5e7eb; font-size:1.05rem;">
+{answer}
+</div>
+        """.strip(),
+        unsafe_allow_html=True
+    )
 
-    with colA:
-        st.subheader("Pipeline Details")
+    # ✅ Evidence next (business-friendly)
+    if ranked:
+        with st.expander("Why this answer? (Source Evidence)", expanded=True):
+            for i, d in enumerate(ranked, start=1):
+                header = f"**Source {i}**"
+                if show_scores:
+                    header += f"  |  score={d['score']:.4f}  |  {d['source']}"
+                st.markdown(header)
+                st.markdown(safe_preview(d.get("text", ""), limit=700))
+                st.markdown("---")
+
+    # ✅ Technical details last (optional)
+    with st.expander("Technical Details (for engineering review)", expanded=False):
         st.write(f"**Transformed query:** {transformed}")
-        st.write(f"**Route:** {route}")
+        st.write(f"**Retrieval route:** {route}")
+        st.write(f"**Top-K:** {top_k}")
 
-    with colB:
-        st.subheader("Top Reranked Chunks")
-        for i, d in enumerate(ranked, start=1):
-            st.write(f"**#{i} | score={d['score']:.4f} | source={d['source']}**")
-            st.write(d["text"][:700] + ("..." if len(d["text"]) > 700 else ""))
+        with st.expander("Context used for generation", expanded=False):
+            st.text(context)
 
-    with st.expander("Context used for generation"):
-        st.text(context)
 
 # -----------------------------
 # Footer
 # -----------------------------
 st.markdown("---")
-
 st.markdown(
     """
 <div style="text-align:center; font-size: 0.9rem; line-height: 1.6; color: #6b7280;">
@@ -451,4 +434,3 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
-
